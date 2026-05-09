@@ -69,12 +69,3 @@ Our expertise spans **ERP, POS, WMS, HRM, Booking Platforms, Cloud Solutions, an
 <a href="https://www.linkedin.com/in/anon-suphatphon" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin.svg" width="32" height="32" alt="LinkedIn" title="LinkedIn" /> </picture> </a>
 <a href="https://www.x.com/9anon_X" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter.svg" width="32" height="32" alt="X/Twitter" title="X/Twitter" /> </picture> </a>
 </p>
-
-
-
-### Badges
-
-<b>My GitHub Stats</b>
-
-<a href="http://www.github.com/uplift-technology-company-limited"><img src="https://github-readme-streak-stats.herokuapp.com/?user=uplift-technology-company-limited&stroke=ef4444&background=1c1917&ring=0891b2&fire=0891b2&currStreakNum=ef4444&currStreakLabel=0891b2&sideNums=ef4444&sideLabels=ef4444&dates=ef4444&hide_border=true" /></a>
-<a href="https://github.com/uplift-technology-company-limited" align="left"><img src="https://github-readme-stats.vercel.app/api/top-langs/?username=uplift-technology-company-limited&langs_count=10&title_color=0891b2&text_color=ef4444&icon_color=14b8a6&bg_color=1c1917&hide_border=true&locale=en&custom_title=Top%20Languages" alt="Top Languages" /></a>
