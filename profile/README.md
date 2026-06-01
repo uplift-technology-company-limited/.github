@@ -125,12 +125,15 @@
 
 | Layer | Stack |
 |---|---|
-| **AI & Agent** | Python · LangGraph · MCP (Model Context Protocol) · Hybrid LLM (Ollama local + cloud fallback) |
+| **AI & Agent** | Python · LangGraph · MCP (Model Context Protocol) · Hybrid LLM (Ollama local + cloud fallback) · Temporal (workflow orchestration) |
 | **Web** | TypeScript · Next.js · React |
-| **Backend** | TypeScript · Go (microservices) |
+| **Backend** | TypeScript · Go (microservices) · Kong (API gateway) |
 | **Mobile** | Flutter |
+| **Messaging & Jobs** | RabbitMQ · BullMQ · Redis |
 | **Data & Search** | PostgreSQL · Redis · Meilisearch |
-| **Infra & DevOps** | AWS (ECS · RDS · S3 · CloudFront) · Terraform · Docker · Kubernetes · Jenkins · GitHub Actions · Cloudflare · Prometheus · Grafana |
+| **Observability** | Sentry / GlitchTip · Prometheus · Grafana · Loki (logs) · Tempo (traces) · Uptime Kuma |
+| **Secrets & Networking** | HashiCorp Vault · Consul · Traefik · Cloudflare · AWS Secrets Manager |
+| **Infra & CI/CD** | AWS (ECS · RDS · S3 · CloudFront) · Terraform + Atlantis · Docker · Kubernetes · Jenkins · GitHub Actions · Portainer |
 
 **App & Data**
 
@@ -141,11 +144,13 @@
 <a href="https://redis.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/redis-colored.svg" alt="Redis" title="Redis" width="34" height="34" /></a>
 </p>
 
-**Infrastructure & DevOps**
+**Infrastructure · Observability · DevOps**
 
 <p align="left">
-<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://skillicons.dev/icons?i=aws,terraform,docker,kubernetes,jenkins,githubactions,cloudflare,prometheus,grafana" alt="AWS · Terraform · Docker · Kubernetes · Jenkins · GitHub Actions · Cloudflare · Prometheus · Grafana" height="40" /></a>
+<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://skillicons.dev/icons?i=aws,terraform,docker,kubernetes,jenkins,githubactions,cloudflare,nginx,grafana,prometheus,rabbitmq,redis,sentry,vault" alt="AWS · Terraform · Docker · Kubernetes · Jenkins · GitHub Actions · Cloudflare · Traefik · Grafana · Prometheus · RabbitMQ · Redis · Sentry · Vault" height="40" /></a>
 </p>
+
+> ➕ also: **Kong** (API gateway) · **Temporal** (workflows) · **Consul** · **Loki** + **Tempo** (logs/traces) · **GlitchTip** · **Atlantis** (Terraform PR automation) · **Meilisearch** · **Portainer**
 
 ---
 
