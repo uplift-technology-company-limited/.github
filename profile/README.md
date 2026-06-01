@@ -129,27 +129,23 @@
 | **Web** | TypeScript · Next.js · React |
 | **Backend** | TypeScript · Go (microservices) |
 | **Mobile** | Flutter |
-| **Data & Infra** | PostgreSQL · Redis · Meilisearch · Docker · AWS |
+| **Data & Search** | PostgreSQL · Redis · Meilisearch |
+| **Infra & DevOps** | AWS (ECS · RDS · S3 · CloudFront) · Terraform · Docker · Kubernetes · Jenkins · GitHub Actions · Cloudflare · Prometheus · Grafana |
+
+**App & Data**
 
 <p align="left">
 <a href="https://nextjs.org/docs" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nextjs-colored-dark.svg" alt="Next.js" title="Next.js" width="34" height="34" /></a>
 <a href="https://reactjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/react-colored.svg" alt="React" title="React" width="34" height="34" /></a>
 <a href="https://www.postgresql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/postgresql-colored.svg" alt="PostgreSQL" title="PostgreSQL" width="34" height="34" /></a>
 <a href="https://redis.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/redis-colored.svg" alt="Redis" title="Redis" width="34" height="34" /></a>
-<a href="https://www.docker.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/docker-colored.svg" alt="Docker" title="Docker" width="34" height="34" /></a>
-<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/aws-colored-dark.svg" alt="AWS" title="AWS" width="34" height="34" /></a>
 </p>
 
----
+**Infrastructure & DevOps**
 
-## Team
-
-| | Name | Role | Background |
-|---|---|---|---|
-| 👤 | **Anon Suphatphon** | CEO | MSIG · AIS · ASCEND · System Architect · NRCT-funded AI researcher |
-| 🤖 | **Pattapon Tanankakorn** | CAO | TISTR · Skoltech (RU) · NUS · Spheroid · NRCT |
-| 🔧 | **Suphansa Naenaudon** | System Integrator | DEVED · INSYSC |
-| 🏗️ | **Supawit Srichompoo** | CTO | INSYSC · Yip In Tsoi · Motif |
+<p align="left">
+<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://skillicons.dev/icons?i=aws,terraform,docker,kubernetes,jenkins,githubactions,cloudflare,prometheus,grafana" alt="AWS · Terraform · Docker · Kubernetes · Jenkins · GitHub Actions · Cloudflare · Prometheus · Grafana" height="40" /></a>
+</p>
 
 ---
 
