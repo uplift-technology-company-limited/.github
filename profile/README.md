@@ -38,10 +38,22 @@
 
 ## 🚩 Flagship — Samoe (เสมอ)
 
-> ### Co-work Agent ERP
-> **SMB-Native Agent Harness for ERP** · ใช้งานผ่าน LINE · ไม่ต้องโหลดแอป ไม่ต้องเทรนพนักงาน
+<table>
+<tr>
+<td width="170" align="center">
+<img src="https://raw.githubusercontent.com/uplift-technology-company-limited/.github/main/profile/assets/samoe-mascot.webp" width="150" alt="น้องเสมอ — Samoe mascot" />
+<br/><sub><b>น้องเสมอ</b></sub>
+</td>
+<td>
+
+### Co-work Agent ERP
+**SMB-Native Agent Harness for ERP** · ใช้งานผ่าน LINE · ไม่ต้องโหลดแอป ไม่ต้องเทรนพนักงาน
 
 **Samoe (เสมอ)** คือทีม AI ที่อยู่เคียงข้างธุรกิจคุณ — สั่งงานเป็นภาษาคนผ่าน LINE แล้วน้องๆ ลงมือทำจริง อ่านข้อมูลหลังบ้าน สร้างเอกสาร ปิดยอด ดูสต็อก ตลอด 24 ชม.
+
+</td>
+</tr>
+</table>
 
 **AI Capability Ladder (Samoe L0–L4):**
 
@@ -52,6 +64,26 @@
 | L2 | Agent | ทำงานเดี่ยวอัตโนมัติ 1 งาน |
 | **L3** | **Co-work** ⭐ | **หลาย agent ทำงานร่วมกัน + ร่วมกับคน ← Samoe อยู่ตรงนี้** |
 | L4 | Organization | AI รันทั้งองค์กร (วิสัยทัศน์ 5 ปี) |
+
+### Concept ของเสมอ · **เคียง · ทำงาน · เสมอ**
+
+* **เคียง** — อยู่ข้างคุณ ไม่ใช่แทนคุณ
+* **ทำงาน** — Agent ที่ execute ได้จริง ไม่ใช่ chatbot ที่รอตอบ
+* **เสมอ** — always · ตลอดเวลา · ชื่อมัน คือค่าของมัน
+
+> *เจ้าของธุรกิจไทย ไม่ควรเป็นลูกจ้างที่ขยันที่สุดของบริษัทตัวเอง*
+> AI ไม่ได้มาแทนคน — มันมาทำงานซ้ำๆ แทน เพื่อให้คนของคุณได้คิดเรื่องที่มีค่ามากกว่า
+
+**ทีม 6 น้อง · specialist agents**
+
+| | Agent | หน้าที่ |
+|:--:|---|---|
+| 🌟 | **น้องเสมอ** | Lead agent · orchestrator |
+| 💼 | **น้องเสนอ** | Sales · quotation |
+| 📦 | **น้องสต็อค** | Inventory · WMS |
+| 🧾 | **น้องเสมียน** | Documents · admin |
+| 🤝 | **น้องสะดวก** | Customer operations |
+| ❤️ | **น้องเสน่ห์** | CRM · customer care |
 
 > เคียงข้างคุณ **SAMOE** · Co-work Native-Agent Harness for ERP
 
@@ -68,8 +100,6 @@
 | **AI Marketing Platform** | ระบบ automation โฆษณา/คอนเทนต์ 4 เลเยอร์ | Building |
 | Core Services | Auth · Payment · Notification · Promotion/Loyalty (reusable) | Live |
 
-> และโปรเจกต์ในเครือ: Sampon · SmartCity · Gym · E-Learning · AI Hub · IoT Hub · Chalak
-
 ---
 
 ## บริการ · What We Do
@@ -84,27 +114,31 @@
 
 ## Technology Stack
 
+**Core languages — TypeScript · Python · Go**
+
 <p align="left">
-<a href="https://www.typescriptlang.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/typescript-colored.svg" alt="TypeScript" title="TypeScript" width="36" height="36" /></a>
-<a href="https://nodejs.org/en/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nodejs-colored.svg" alt="Node.js" title="Node.js" width="36" height="36" /></a>
-<a href="https://nextjs.org/docs" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nextjs-colored-dark.svg" alt="Next.js" title="Next.js" width="36" height="36" /></a>
-<a href="https://reactjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/react-colored.svg" alt="React" title="React" width="36" height="36" /></a>
-<a href="https://tailwindcss.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/tailwindcss-colored.svg" alt="TailwindCSS" title="TailwindCSS" width="36" height="36" /></a>
-<a href="https://ui.shadcn.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/shadcnui-colored-dark.svg" alt="shadcn/ui" title="shadcn/ui" width="36" height="36" /></a>
-<a href="https://flutter.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/flutter-colored.svg" alt="Flutter" title="Flutter" width="36" height="36" /></a>
-<a href="https://dart.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/dart-colored.svg" alt="Dart" title="Dart" width="36" height="36" /></a>
-<a href="https://www.python.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/python-colored.svg" alt="Python" title="Python" width="36" height="36" /></a>
-<a href="https://fastapi.tiangolo.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/fastapi-colored.svg" alt="FastAPI" title="FastAPI" width="36" height="36" /></a>
-<a href="https://go.dev/doc/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/go-colored.svg" alt="Go" title="Go" width="36" height="36" /></a>
-<a href="https://www.postgresql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/postgresql-colored.svg" alt="PostgreSQL" title="PostgreSQL" width="36" height="36" /></a>
-<a href="https://redis.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/redis-colored.svg" alt="Redis" title="Redis" width="36" height="36" /></a>
-<a href="https://www.docker.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/docker-colored.svg" alt="Docker" title="Docker" width="36" height="36" /></a>
-<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/aws-colored-dark.svg" alt="AWS" title="AWS" width="36" height="36" /></a>
-<a href="https://firebase.google.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/firebase-colored.svg" alt="Firebase" title="Firebase" width="36" height="36" /></a>
-<a href="https://www.figma.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/figma-colored.svg" alt="Figma" title="Figma" width="36" height="36" /></a>
+<a href="https://www.typescriptlang.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/typescript-colored.svg" alt="TypeScript" title="TypeScript" width="40" height="40" /></a>
+<a href="https://www.python.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/python-colored.svg" alt="Python" title="Python" width="40" height="40" /></a>
+<a href="https://go.dev/doc/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/go-colored.svg" alt="Go" title="Go" width="40" height="40" /></a>
+<a href="https://flutter.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/flutter-colored.svg" alt="Flutter" title="Flutter" width="40" height="40" /></a>
 </p>
 
-> **AI & Agent Layer:** LangGraph · MCP (Model Context Protocol) · Hybrid LLM (Ollama local + cloud fallback) · Meilisearch
+| Layer | Stack |
+|---|---|
+| **AI & Agent** | Python · LangGraph · MCP (Model Context Protocol) · Hybrid LLM (Ollama local + cloud fallback) |
+| **Web** | TypeScript · Next.js · React |
+| **Backend** | TypeScript · Go (microservices) |
+| **Mobile** | Flutter |
+| **Data & Infra** | PostgreSQL · Redis · Meilisearch · Docker · AWS |
+
+<p align="left">
+<a href="https://nextjs.org/docs" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nextjs-colored-dark.svg" alt="Next.js" title="Next.js" width="34" height="34" /></a>
+<a href="https://reactjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/react-colored.svg" alt="React" title="React" width="34" height="34" /></a>
+<a href="https://www.postgresql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/postgresql-colored.svg" alt="PostgreSQL" title="PostgreSQL" width="34" height="34" /></a>
+<a href="https://redis.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/redis-colored.svg" alt="Redis" title="Redis" width="34" height="34" /></a>
+<a href="https://www.docker.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/docker-colored.svg" alt="Docker" title="Docker" width="34" height="34" /></a>
+<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/aws-colored-dark.svg" alt="AWS" title="AWS" width="34" height="34" /></a>
+</p>
 
 ---
 
