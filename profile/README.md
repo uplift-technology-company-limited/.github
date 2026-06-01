@@ -1,71 +1,143 @@
-UPLIFT TECHNOLOGY COMPANY LIMITED![](https://user-images.githubusercontent.com/18350557/176309783-0785949b-9127-417c-8b55-ab5a4333674e.gif)
-================================================================================================================================
+<div align="center">
 
+# UPLIFT TECHNOLOGY
 
-Transforming Ideas into Revolutionary Solutions
-------------------------------------
+### Co-work Agent Harness for Thai SMEs
+**เราสร้าง “พนักงาน AI” ที่ทำงานบนเครื่องมือเดิมของธุรกิจคุณ — ไม่ใช่ขายเครื่องมือใหม่**
 
-Uplift Technology Limited is a software company based in Bangkok, Thailand, specializing in **end-to-end digital solutions** that empower organizations to scale with confidence.
-Our expertise spans **ERP, POS, WMS, HRM, Booking Platforms, Cloud Solutions, and AI-powered applications**, serving clients from SMEs to multinational enterprises.
+`AI ที่ลงมือทำ · ไม่ใช่ AI ที่รอคุณถาม`
 
+</div>
 
-* 🌍 Based in Bangkok, Thailand
-* 🏢 Software company specializing in end-to-end digital solutions
-* 💼 Serving clients from SMEs to multinational enterprises
-* 🚀 Empowering organizations to scale with confidence through innovative technology
+---
 
+## เกี่ยวกับเรา · About Us
 
+**UPLIFT Technology** เป็นบริษัทซอฟต์แวร์จากประเทศไทยที่สร้าง **Co-work Agent Harness** — ชั้นของ AI ที่ทำงาน *เคียงข้าง* คนจริง บนข้อมูลและระบบที่ธุรกิจใช้อยู่แล้ว
 
-### Services & Expertise
+เราเชื่อว่าปัญหาที่ใหญ่ที่สุดของ SME ไทยคือ **การบริหารเวลา** — เจ้าของธุรกิจจมอยู่กับงานซ้ำๆ จนไม่มีเวลาโต ภารกิจของเราคือคืนเวลานั้นกลับไป ให้ทีมเดิมทำงานได้มากขึ้น และช่วยให้ SME รอดพ้น 3 ปีแรกไปสู่การเติบโตที่ยั่งยืน
 
-* **Enterprise Solutions**: ERP, POS, WMS, HRM
-* **Digital Platforms**: SaaS, PaaS, Booking & E-commerce
-* **Cloud & Infrastructure**: AWS, Docker, Kubernetes, CI/CD, DevOps
-* **AI & Innovation**: AI Applications, Big Data, Automation
-* **Custom Development**: Web, Mobile, LINE LIFF
+> *Uplift exists so every Thai SME can have an AI workforce that runs on the tools they already use — no rip-and-replace, every feature a bolt-on to the system they already trust.*
 
+* 🇹🇭 Based in Thailand · serving Thai SMEs (micro → enterprise)
+* 🤝 Founder-led · **25+ projects shipped in our first year**
+* 🧩 Every feature ships as a **bolt-on** to your existing stack
+* ⚡ Hybrid AI (local + cloud) for low cost & high margin
 
+---
 
+## เราไม่ใช่ · The Negative Space
 
-### Technology Stack
+```
+❌ ไม่ใช่ AI model        (Claude · ChatGPT · Gemini — รอคุณถาม)
+❌ ไม่ใช่ legacy ERP       (SAP · Odoo · Express — รอคุณคีย์)
+✅ คือ Agent Harness      — ทำงาน บน ข้อมูลของคุณ เคียงข้างคุณ
+```
 
+---
 
-<p align="left"> <a href="https://dart.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/dart-colored.svg" alt="Dart" title="Dart" width="36" height="36" /></a> <a href="https://git-scm.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/git-colored.svg" alt="Git" title="Git" width="36" height="36" /></a> <a href="https://go.dev/doc/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/go-colored.svg" alt="Go" title="Go" width="36" height="36" /></a> <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/javascript-colored.svg" alt="JavaScript" title="JavaScript" width="36" height="36" /></a> <a href="https://www.php.net/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/php-colored.svg" alt="PHP" title="PHP" width="36" height="36" /></a> <a href="https://www.typescriptlang.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/typescript-colored.svg" alt="TypeScript" title="TypeScript" width="36" height="36" /></a> <a href="https://developer.apple.com/swift/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/swift-colored.svg" alt="Swift" title="Swift" width="36" height="36" /></a> <a href="https://www.python.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/python-colored.svg" alt="Python" title="Python" width="36" height="36" /></a> <a href="https://code.visualstudio.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/visualstudiocode-colored.svg" alt="VS Code" title="VS Code" width="36" height="36" /></a> <a href="https://tailwindcss.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/tailwindcss-colored.svg" alt="TailwindCSS" title="TailwindCSS" width="36" height="36" /></a> <a href="https://ui.shadcn.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/shadcnui-colored.svg" alt="Shadcn/ui" title="Shadcn/ui" width="36" height="36" /></a> <a href="https://nextjs.org/docs" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nextjs-colored-dark.svg" alt="NextJs" title="NextJs" width="36" height="36" /></a> <a href="https://nuxtjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nuxtjs-colored.svg" alt="Nuxtjs" title="Nuxtjs" width="36" height="36" /></a> <a href="https://www.w3.org/TR/CSS/#css" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/css3-colored.svg" alt="CSS3" title="CSS3" width="36" height="36" /></a> <a href="https://sass-lang.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/sass-colored.svg" alt="Sass" title="Sass" width="36" height="36" /></a> <a href="https://jquery.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/jquery-colored.svg" alt="JQuery" title="JQuery" width="36" height="36" /></a> <a href="https://vitejs.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/vite-colored.svg" alt="Vite" title="Vite" width="36" height="36" /></a> <a href="https://reactjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/react-colored.svg" alt="React" title="React" width="36" height="36" /></a> <a href="https://vuejs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/vuejs-colored.svg" alt="Vue" title="Vue" width="36" height="36" /></a> <a href="https://nodejs.org/en/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nodejs-colored.svg" alt="NodeJS" title="NodeJS" width="36" height="36" /></a> <a href="https://www.mongodb.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/mongodb-colored.svg" alt="MongoDB" title="MongoDB" width="36" height="36" /></a> <a href="https://expressjs.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/express-colored-dark.svg" alt="Express" title="Express" width="36" height="36" /></a> <a href="https://docs.nestjs.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nestjs-colored.svg" alt="NestJS" title="NestJS" width="36" height="36" /></a> <a href="https://www.postgresql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/postgresql-colored.svg" alt="PostgreSQL" title="PostgreSQL" width="36" height="36" /></a> <a href="https://firebase.google.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/firebase-colored.svg" alt="Firebase" title="Firebase" width="36" height="36" /></a> <a href="https://fastapi.tiangolo.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/fastapi-colored.svg" alt="Fast API" title="Fast API" width="36" height="36" /></a> <a href="https://graphql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/graphql-colored.svg" alt="GraphQL" title="GraphQL" width="36" height="36" /></a> <a href="https://www.figma.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/figma-colored.svg" alt="Figma" title="Figma" width="36" height="36" /></a> <a href="https://cloud.google.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/googlecloud-colored.svg" alt="Google Cloud" title="Google Cloud" width="36" height="36" /></a> <a href="https://framer.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/framer-colored.svg" alt="Framer" title="Framer" width="36" height="36" /></a> <a href="https://www.raspberrypi.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/raspberrypi-colored.svg" alt="Raspberry Pi" title="Raspberry Pi" width="36" height="36" /></a> <a href="https://ubuntu.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/ubuntu-colored.svg" alt="Ubuntu" title="Ubuntu" width="36" height="36" /></a> <a href="https://www.linux.org" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/linux-colored.svg" alt="Linux" title="Linux" width="36" height="36" /></a> <a href="https://apple.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/macos-colored-dark.svg" alt="MacOS" title="MacOS" width="36" height="36" /></a> <a href="https://www.docker.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/docker-colored.svg" alt="Docker" title="Docker" width="36" height="36" /></a> <a href="https://kubernetes.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/kubernetes-colored.svg" alt="Kubernetes" title="Kubernetes" width="36" height="36" /></a> <a href="https://www.tensorflow.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/tensorflow-colored.svg" alt="TensorFlow" title="TensorFlow" width="36" height="36" /></a> <a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/aws-colored-dark.svg" alt="Amazon Web Services" title="Amazon Web Services" width="36" height="36" /></a> <a href="https://pytorch.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/pytorch-colored.svg" alt="PyTorch" title="PyTorch" width="36" height="36" /></a> <a href="https://flutter.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/flutter-colored.svg" alt="Flutter" title="Flutter" width="36" height="36" /></a> <a href="https://laravel.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/laravel-colored.svg" alt="Laravel" title="Laravel" width="36" height="36" /></a> </p>
+## 🚩 Flagship — Samoe (เสมอ)
 
+> ### Co-work Agent ERP
+> **SMB-Native Agent Harness for ERP** · ใช้งานผ่าน LINE · ไม่ต้องโหลดแอป ไม่ต้องเทรนพนักงาน
 
+**Samoe (เสมอ)** คือทีม AI ที่อยู่เคียงข้างธุรกิจคุณ — สั่งงานเป็นภาษาคนผ่าน LINE แล้วน้องๆ ลงมือทำจริง อ่านข้อมูลหลังบ้าน สร้างเอกสาร ปิดยอด ดูสต็อก ตลอด 24 ชม.
 
-### Founder & Co-Founder
+**AI Capability Ladder (Samoe L0–L4):**
 
+| Level | | |
+|:--:|---|---|
+| L0 | No AI | Excel · paper · legacy ERP |
+| L1 | Chatbot | FAQ bots · ตอบอย่างเดียว |
+| L2 | Agent | ทำงานเดี่ยวอัตโนมัติ 1 งาน |
+| **L3** | **Co-work** ⭐ | **หลาย agent ทำงานร่วมกัน + ร่วมกับคน ← Samoe อยู่ตรงนี้** |
+| L4 | Organization | AI รันทั้งองค์กร (วิสัยทัศน์ 5 ปี) |
 
-**Anon Suphatphon** - CEO & Full-Stack Developer
+> เคียงข้างคุณ **SAMOE** · Co-work Native-Agent Harness for ERP
 
-* 💼 CEO at Uplift Technology Company Limited
-* 📊 Product Owner/Analyst at Ascend Group
-* 🏗️ System Architect at AIS
-* 🤝 Collaborated with Banyan Tree Group, Toyota, Rama Hospital
-* 🔬 AI Medical Lab Trainee
-* 🌐 Exchange Researcher at Michigan State University, USA
-* 🏆 Awarded 2M THB National Research Funding (NRCT) – AI-powered presymptomatic COVID-19 detection app
-* 🎓 M.Sc. in Software Engineering – Woolf University
-* 🎓 MBA in Business Administration – KMITL
-* 🎓 B.Eng. Biomedical Engineering (International Program) – KMITL
+---
 
+## Product Portfolio
 
-**Pattapon Tanankakorn** - Co-Founder & AI Lead
+| Product | What it is | Status |
+|---|---|:--:|
+| **Samoe (เสมอ)** | 🚩 Co-work Agent ERP บน LINE · 6 specialist agents (น้อง) | Building → MVP |
+| **D-Clean** | แพลตฟอร์มแม่บ้าน on-demand + AI Matching Engine | Live |
+| **Meekong (มีของ)** | E-commerce marketplace + ระบบประมูล real-time | MVP |
+| **Uplift Car** | ระบบติดตามรถ/งานภาครัฐ · GPS + geospatial | Live |
+| **AI Marketing Platform** | ระบบ automation โฆษณา/คอนเทนต์ 4 เลเยอร์ | Building |
+| Core Services | Auth · Payment · Notification · Promotion/Loyalty (reusable) | Live |
 
-* 🤖 AI Lead at Uplift Technology Company Limited
-* 🌏 Internship at National University of Singapore (NUS)
-* 🎓 M.S. in Data Processing – Skolkovo Institute of Science and Technology
-* 🎓 B.Eng. Biomedical Engineering (International Program) – KMITL
+> และโปรเจกต์ในเครือ: Sampon · SmartCity · Gym · E-Learning · AI Hub · IoT Hub · Chalak
 
+---
 
-### Contact & Socials
+## บริการ · What We Do
 
+* **Co-work Agent Harness** — AI agents (LangGraph · MCP layer) ที่ลงมือทำงานบนระบบเดิม
+* **Enterprise Software** — ERP · POS · WMS · HRM · CRM · Booking
+* **Digital Platforms** — Marketplace · E-commerce · SaaS · Mobile App
+* **Cloud & Infrastructure** — AWS · Docker · CI/CD · DevOps
+* **Custom Development** — Web · Mobile · LINE LIFF · Hardware/IoT
 
+---
+
+## Technology Stack
+
+<p align="left">
+<a href="https://www.typescriptlang.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/typescript-colored.svg" alt="TypeScript" title="TypeScript" width="36" height="36" /></a>
+<a href="https://nodejs.org/en/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nodejs-colored.svg" alt="Node.js" title="Node.js" width="36" height="36" /></a>
+<a href="https://nextjs.org/docs" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/nextjs-colored-dark.svg" alt="Next.js" title="Next.js" width="36" height="36" /></a>
+<a href="https://reactjs.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/react-colored.svg" alt="React" title="React" width="36" height="36" /></a>
+<a href="https://tailwindcss.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/tailwindcss-colored.svg" alt="TailwindCSS" title="TailwindCSS" width="36" height="36" /></a>
+<a href="https://ui.shadcn.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/shadcnui-colored-dark.svg" alt="shadcn/ui" title="shadcn/ui" width="36" height="36" /></a>
+<a href="https://flutter.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/flutter-colored.svg" alt="Flutter" title="Flutter" width="36" height="36" /></a>
+<a href="https://dart.dev/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/dart-colored.svg" alt="Dart" title="Dart" width="36" height="36" /></a>
+<a href="https://www.python.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/python-colored.svg" alt="Python" title="Python" width="36" height="36" /></a>
+<a href="https://fastapi.tiangolo.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/fastapi-colored.svg" alt="FastAPI" title="FastAPI" width="36" height="36" /></a>
+<a href="https://go.dev/doc/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/go-colored.svg" alt="Go" title="Go" width="36" height="36" /></a>
+<a href="https://www.postgresql.org/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/postgresql-colored.svg" alt="PostgreSQL" title="PostgreSQL" width="36" height="36" /></a>
+<a href="https://redis.io/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/redis-colored.svg" alt="Redis" title="Redis" width="36" height="36" /></a>
+<a href="https://www.docker.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/docker-colored.svg" alt="Docker" title="Docker" width="36" height="36" /></a>
+<a href="https://aws.amazon.com" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/aws-colored-dark.svg" alt="AWS" title="AWS" width="36" height="36" /></a>
+<a href="https://firebase.google.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/firebase-colored.svg" alt="Firebase" title="Firebase" width="36" height="36" /></a>
+<a href="https://www.figma.com/" target="_blank" rel="noreferrer"><img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/skills/figma-colored.svg" alt="Figma" title="Figma" width="36" height="36" /></a>
+</p>
+
+> **AI & Agent Layer:** LangGraph · MCP (Model Context Protocol) · Hybrid LLM (Ollama local + cloud fallback) · Meilisearch
+
+---
+
+## Team
+
+| | Name | Role | Background |
+|---|---|---|---|
+| 👤 | **Anon Suphatphon** | CEO | MSIG · AIS · ASCEND · System Architect · NRCT-funded AI researcher |
+| 🤖 | **Pattapon Tanankakorn** | CAO | TISTR · Skoltech (RU) · NUS · Spheroid · NRCT |
+| 🔧 | **Suphansa Naenaudon** | System Integrator | DEVED · INSYSC |
+| 🏗️ | **Supawit Srichompoo** | CTO | INSYSC · Yip In Tsoi · Motif |
+
+---
+
+## ติดต่อ · Contact & Socials
+
+* 🌐 **Website** — [uplifttech.co](https://uplifttech.co)
+* ✉️ **Email** — official@uplifttech.co
+* 💼 **Fastwork** — [fastwork.co/user/uplift-tech](https://fastwork.co/user/uplift-tech)
+* 🐙 **GitHub** — [@uplift-technology-company-limited](https://github.com/uplift-technology-company-limited)
 
 <p align="left">
 <a href="https://www.github.com/uplift-technology-company-limited" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github.svg" width="32" height="32" alt="Company GitHub" title="Company GitHub" /> </picture> </a>
-<a href="https://www.github.com/9Aediter" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/github.svg" width="32" height="32" alt="Founder GitHub" title="Founder GitHub" /> </picture> </a>
 <a href="https://www.linkedin.com/in/anon-suphatphon" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/linkedin.svg" width="32" height="32" alt="LinkedIn" title="LinkedIn" /> </picture> </a>
 <a href="https://www.x.com/9anon_X" target="_blank" rel="noreferrer"> <picture> <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter-dark.svg" /> <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter.svg" /> <img src="https://raw.githubusercontent.com/danielcranney/readme-generator/main/public/icons/socials/twitter.svg" width="32" height="32" alt="X/Twitter" title="X/Twitter" /> </picture> </a>
 </p>
+
+---
+
+<div align="center">
+
+<sub><b>UPLIFT TECHNOLOGY CO., LTD.</b> · เคียงข้างทุกธุรกิจ เสมอ</sub>
+
+<a href="http://www.github.com/uplift-technology-company-limited"><img src="https://github-readme-streak-stats.herokuapp.com/?user=uplift-technology-company-limited&stroke=a78bfa&background=0a0a18&ring=f59e0b&fire=f59e0b&currStreakNum=fafaf9&currStreakLabel=a78bfa&sideNums=fafaf9&sideLabels=a78bfa&dates=a78bfa&hide_border=true" /></a>
+
+</div>
