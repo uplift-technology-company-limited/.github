@@ -1,0 +1,493 @@
+name: ECS Deploy (reusable)
+
+# Single source of truth for deploying a container to the Uplift ECS cluster.
+#
+# WHY THIS EXISTS
+#   Every service repo used to carry its own task-definition logic, in one of
+#   five shapes (jq-inherit / inline-python render / deploy.sh heredoc / matrix
+#   render / shared script), each duplicated again in scripts/deploy.sh. Any
+#   cross-cutting infra change — Traefik router labels, secret backend, log
+#   config — had to be reimplemented ~10 times, and drifted every time. This
+#   workflow owns the infra half so a change lands once.
+#
+# DIVISION OF LABOUR
+#   caller repo  → language setup, gates, docker build, ECR push  (app-specific)
+#   this workflow → task definition, Traefik labels, secrets, rollout, rollback
+#
+# NO IDENTIFIERS ARE HARDCODED HERE. This repo is public; account id, region,
+# cluster and domains come from ORG-LEVEL Actions variables (vars.*), which
+# resolve against the CALLING repository's organisation:
+#   AWS_REGION · AWS_ACCOUNT_ID · ECS_CLUSTER · INTERNAL_DOMAIN · SSM_PREFIX
+#
+# PIN A TAG, NOT A BRANCH. Callers must reference @v1 (or a newer major), never
+# @main — a bug here would otherwise break every repo's deploy simultaneously.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "ECS service name. Also the default for container name, task family, Traefik router names and SSM path."
+        required: true
+        type: string
+      image:
+        description: "Fully-qualified image URI already pushed to ECR (the caller's build job output)."
+        required: true
+        type: string
+      container_port:
+        description: "Port the app listens on inside the container."
+        required: true
+        type: number
+
+      container_name:
+        description: "Container to patch inside the task definition. Defaults to `service`. Set this when the task has sidecars (e.g. a firelens logrouter) — selecting by NAME, never by index, is why sidecar services are safe here."
+        required: false
+        type: string
+        default: ""
+      task_family:
+        description: "Task definition family. Defaults to `service`."
+        required: false
+        type: string
+        default: ""
+
+      public_host:
+        description: "Public hostname (e.g. account.uplifttech.co). Leave empty for an internal-only service — no public Traefik router is emitted."
+        required: false
+        type: string
+        default: ""
+      internal_host:
+        description: "Internal mesh hostname. Defaults to <service>.<vars.INTERNAL_DOMAIN>. Set to '-' to emit no internal router."
+        required: false
+        type: string
+        default: ""
+      health_path:
+        description: "Path Traefik health-checks, and the path appended to public_host for the smoke test when smoke_url is unset."
+        required: false
+        type: string
+        default: "/health"
+      traefik_healthcheck:
+        description: "Emit loadbalancer.healthcheck.path labels. Turn OFF for apps that 404 on health_path (several samoe apps do)."
+        required: false
+        type: boolean
+        default: true
+
+      ssm_path:
+        description: "SSM Parameter Store path holding this service's secrets. Defaults to <vars.SSM_PREFIX>/<service>. If it contains ZERO parameters the live task definition's existing `secrets` block is inherited unchanged — that is what makes repo-by-repo adoption safe."
+        required: false
+        type: string
+        default: ""
+      allow_secret_removal:
+        description: >
+          Permit the generated secrets block to DROP names the live task definition
+          currently supplies. Off by default: a partially-populated SSM path is more
+          dangerous than an empty one, because it looks like a successful migration
+          while silently starving the container of env it needs to boot.
+        required: false
+        type: boolean
+        default: false
+
+      version:
+        description: "Release version injected as APP_VERSION + OTEL_SERVICE_VERSION. Empty leaves whatever the live task def has."
+        required: false
+        type: string
+        default: ""
+
+      smoke_url:
+        description: "URL to poll after rollout. Defaults to https://<public_host><health_path> when public_host is set. Empty and no public_host = no smoke test."
+        required: false
+        type: string
+        default: ""
+      wait_stable:
+        description: "Wait for the ECS deployment to stabilise, and roll back automatically if it does not."
+        required: false
+        type: boolean
+        default: true
+      ensure_deployment_config:
+        description: "Enforce maximumPercent=200 / minimumHealthyPercent=100 so a roll never drops the last task. Disable for services pinned to a fixed host port, where two tasks cannot coexist."
+        required: false
+        type: boolean
+        default: true
+      runner_labels:
+        description: "JSON array of runner labels."
+        required: false
+        type: string
+        default: '["self-hosted","linux","arm64","uplift-deploy"]'
+      require_main:
+        description: "Hard-fail unless the caller ref is refs/heads/main (branch gate: feature → dev → main → deploy)."
+        required: false
+        type: boolean
+        default: true
+
+    outputs:
+      task_definition_arn:
+        description: "ARN of the task definition registered by this run."
+        value: ${{ jobs.deploy.outputs.task_definition_arn }}
+      previous_task_definition_arn:
+        description: "ARN that was live before this run — the rollback target."
+        value: ${{ jobs.deploy.outputs.previous_task_definition_arn }}
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 25
+
+    outputs:
+      task_definition_arn: ${{ steps.register.outputs.arn }}
+      previous_task_definition_arn: ${{ steps.resolve.outputs.previous_arn }}
+
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      INTERNAL_DOMAIN: ${{ vars.INTERNAL_DOMAIN }}
+      SSM_PREFIX: ${{ vars.SSM_PREFIX }}
+
+    steps:
+      # ── Preconditions ──────────────────────────────────────────────────────
+      - name: Guard — required org variables are set
+        run: |
+          missing=""
+          for v in AWS_REGION AWS_ACCOUNT_ID ECS_CLUSTER INTERNAL_DOMAIN SSM_PREFIX; do
+            eval "val=\${$v}"
+            [ -n "$val" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing org Actions variables:$missing — set them at Organisation → Settings → Secrets and variables → Actions → Variables."
+            exit 1
+          fi
+
+      - name: Guard — must deploy from main
+        if: inputs.require_main
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploy must run from main (got $GH_REF). Branch gate: feature → dev → main → deploy."
+            exit 1
+          fi
+
+      # ── Resolve every derived name in one place ────────────────────────────
+      - name: Resolve names
+        id: resolve
+        env:
+          IN_SERVICE: ${{ inputs.service }}
+          IN_CONTAINER: ${{ inputs.container_name }}
+          IN_FAMILY: ${{ inputs.task_family }}
+          IN_INTERNAL_HOST: ${{ inputs.internal_host }}
+          IN_SSM_PATH: ${{ inputs.ssm_path }}
+          IN_PUBLIC_HOST: ${{ inputs.public_host }}
+          IN_SMOKE_URL: ${{ inputs.smoke_url }}
+          IN_HEALTH_PATH: ${{ inputs.health_path }}
+        run: |
+          set -euo pipefail
+          SERVICE="$IN_SERVICE"
+          CONTAINER="${IN_CONTAINER:-$SERVICE}"
+          FAMILY="${IN_FAMILY:-$SERVICE}"
+
+          # '-' is the explicit opt-out; empty means "use the convention".
+          if [ "$IN_INTERNAL_HOST" = "-" ]; then
+            INTERNAL_HOST=""
+          else
+            INTERNAL_HOST="${IN_INTERNAL_HOST:-$SERVICE.$INTERNAL_DOMAIN}"
+          fi
+
+          SSM_PATH="${IN_SSM_PATH:-$SSM_PREFIX/$SERVICE}"
+
+          SMOKE="$IN_SMOKE_URL"
+          if [ -z "$SMOKE" ] && [ -n "$IN_PUBLIC_HOST" ]; then
+            SMOKE="https://$IN_PUBLIC_HOST$IN_HEALTH_PATH"
+          fi
+
+          PREV=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
+            --query 'services[0].taskDefinition' --output text 2>/dev/null || echo "")
+
+          {
+            echo "service=$SERVICE"
+            echo "container=$CONTAINER"
+            echo "family=$FAMILY"
+            echo "internal_host=$INTERNAL_HOST"
+            echo "ssm_path=$SSM_PATH"
+            echo "smoke=$SMOKE"
+            echo "previous_arn=$PREV"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "service=$SERVICE  container=$CONTAINER  family=$FAMILY"
+          echo "internal_host=${INTERNAL_HOST:-<none>}  public_host=${IN_PUBLIC_HOST:-<none>}"
+          echo "ssm_path=$SSM_PATH"
+          echo "previous task def=${PREV:-<none>}"
+
+      # ── Fetch the live task definition ─────────────────────────────────────
+      # Everything downstream patches this rather than rebuilding from scratch,
+      # so roles, network mode, log config, sidecars and plain env survive.
+      - name: Fetch live task definition
+        env:
+          FAMILY: ${{ steps.resolve.outputs.family }}
+          CONTAINER: ${{ steps.resolve.outputs.container }}
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition \
+            --task-definition "$FAMILY" --region "$AWS_REGION" \
+            --query taskDefinition > live.json
+
+          if ! jq -e --arg cn "$CONTAINER" 'any(.containerDefinitions[]; .name == $cn)' live.json > /dev/null; then
+            echo "::error::No container named '$CONTAINER' in task family '$FAMILY'. Containers present: $(jq -r '[.containerDefinitions[].name]|join(", ")' live.json). Pass container_name explicitly."
+            exit 1
+          fi
+
+      # ── Secrets: build from SSM Parameter Store, or inherit ────────────────
+      # One parameter per value (Parameter Store cannot address a JSON key the
+      # way Secrets Manager's `secret:name:KEY::` form can). The env var name is
+      # the last path segment, so /uplift/account/DATABASE_URL → DATABASE_URL.
+      #
+      # Zero parameters at the path is NOT an error: the live task definition's
+      # secrets block is carried over untouched, so a repo can adopt this
+      # workflow before its secrets have been migrated.
+      #
+      # A PARTIALLY populated path is the dangerous case, and it is a hard error.
+      # Real example: /uplift/account held two stale parameters (DATABASE_URL and
+      # a ZITADEL_URL left over from the retired IdP) while the live definition
+      # supplied eight. Silently switching would have dropped SERVICE_TOKEN,
+      # REDIS_URL, the SSO_* pair and AUTHZ_SIGNING_PRIVATE_KEY, and the container
+      # would not have booted.
+      - name: Build secrets block from SSM
+        id: secrets
+        env:
+          SSM_PATH: ${{ steps.resolve.outputs.ssm_path }}
+          CONTAINER: ${{ steps.resolve.outputs.container }}
+          ALLOW_REMOVAL: ${{ inputs.allow_secret_removal }}
+        run: |
+          set -euo pipefail
+          NAMES=$(aws ssm get-parameters-by-path \
+            --path "$SSM_PATH" --recursive --region "$AWS_REGION" \
+            --query 'Parameters[].Name' --output json 2>/dev/null || echo '[]')
+
+          COUNT=$(echo "$NAMES" | jq 'length')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "No parameters under $SSM_PATH — inheriting the live task definition's secrets block."
+            echo "mode=inherit" >> "$GITHUB_OUTPUT"
+            echo '[]' > secrets.json
+            exit 0
+          fi
+
+          echo "$NAMES" | jq --arg region "$AWS_REGION" --arg acct "$AWS_ACCOUNT_ID" '
+            [ .[] | {
+                name: (split("/") | last),
+                valueFrom: "arn:aws:ssm:\($region):\($acct):parameter\(.)"
+              } ] | sort_by(.name)
+          ' > secrets.json
+
+          # Completeness gate: every name the live definition supplies must still
+          # be supplied after the switch.
+          jq -r --arg cn "$CONTAINER" \
+            '[.containerDefinitions[] | select(.name == $cn) | .secrets // [] | .[].name] | sort | .[]' \
+            live.json > live_names.txt || true
+          jq -r '.[].name' secrets.json | sort > ssm_names.txt
+          MISSING=$(comm -23 live_names.txt ssm_names.txt || true)
+
+          echo "Live definition supplies : $(tr '\n' ' ' < live_names.txt)"
+          echo "SSM path supplies        : $(tr '\n' ' ' < ssm_names.txt)"
+
+          if [ -n "$MISSING" ] && [ "$ALLOW_REMOVAL" != "true" ]; then
+            echo "::error::Refusing to switch $CONTAINER to SSM: $SSM_PATH is incomplete."
+            echo "::error::Missing parameters: $(echo "$MISSING" | tr '\n' ' ')"
+            echo "::error::Create them under $SSM_PATH/<NAME>, or pass allow_secret_removal: true if the drop is intentional."
+            exit 1
+          fi
+          [ -n "$MISSING" ] && echo "::warning::Dropping secrets (allow_secret_removal=true): $(echo "$MISSING" | tr '\n' ' ')"
+
+          echo "mode=ssm" >> "$GITHUB_OUTPUT"
+          echo "Generated $COUNT secret entries from $SSM_PATH:"
+          jq -r '.[].name' secrets.json | sed 's/^/  - /'
+
+      # ── Traefik labels ─────────────────────────────────────────────────────
+      # RULE (learned the hard way, 2026-07-26): as soon as a container defines
+      # more than one Traefik service, EVERY router must name its service
+      # explicitly. Traefik's ECS provider only auto-links router→service when
+      # exactly one service exists; otherwise the router silently 404s. Adding
+      # the internal-mesh router without this broke ~11 public hosts at once.
+      # Both routers therefore always carry an explicit `.service`.
+      - name: Build Traefik labels
+        id: labels
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+          PUBLIC_HOST: ${{ inputs.public_host }}
+          INTERNAL_HOST: ${{ steps.resolve.outputs.internal_host }}
+          PORT: ${{ inputs.container_port }}
+          HEALTH_PATH: ${{ inputs.health_path }}
+          WITH_HC: ${{ inputs.traefik_healthcheck }}
+        run: |
+          set -euo pipefail
+          # Backticks inside jq string interpolation are literal — this is why the
+          # labels are built with jq and not a shell heredoc.
+          jq -n \
+            --arg svc "$SERVICE" --arg pub "$PUBLIC_HOST" --arg int "$INTERNAL_HOST" \
+            --arg port "$PORT" --arg hp "$HEALTH_PATH" --arg hc "$WITH_HC" '
+            def hcpair($name): if $hc == "true"
+              then { ("traefik.http.services.\($name).loadbalancer.healthcheck.path"): $hp }
+              else {} end;
+
+            { "traefik.enable": "true" }
+            + ( if $pub != "" then {
+                  ("traefik.http.routers.\($svc).rule"): "Host(`\($pub)`)",
+                  ("traefik.http.routers.\($svc).entrypoints"): "websecure",
+                  ("traefik.http.routers.\($svc).tls"): "true",
+                  ("traefik.http.routers.\($svc).service"): $svc,
+                  ("traefik.http.services.\($svc).loadbalancer.server.port"): $port
+                } + hcpair($svc) else {} end )
+            + ( if $int != "" then {
+                  ("traefik.http.routers.\($svc)-int.rule"): "Host(`\($int)`)",
+                  ("traefik.http.routers.\($svc)-int.entrypoints"): "web",
+                  ("traefik.http.routers.\($svc)-int.service"): "\($svc)-int",
+                  ("traefik.http.services.\($svc)-int.loadbalancer.server.port"): $port
+                } + hcpair("\($svc)-int") else {} end )
+          ' > labels.json
+          echo "Traefik labels:"; jq -r 'to_entries[] | "  \(.key) = \(.value)"' labels.json
+
+      # ── Register the task definition ───────────────────────────────────────
+      # Inherit-and-patch from the LIVE definition, so execution/task roles,
+      # network mode, log configuration, sidecars, ulimits and plain env all
+      # carry over. Only image, version env, labels and (optionally) secrets
+      # are replaced. The container is selected BY NAME so a firelens sidecar
+      # never gets patched by accident.
+      - name: Register task definition
+        id: register
+        env:
+          FAMILY: ${{ steps.resolve.outputs.family }}
+          CONTAINER: ${{ steps.resolve.outputs.container }}
+          IMAGE: ${{ inputs.image }}
+          VERSION: ${{ inputs.version }}
+          SECRETS_MODE: ${{ steps.secrets.outputs.mode }}
+        run: |
+          set -euo pipefail
+          jq \
+            --arg cn "$CONTAINER" \
+            --arg img "$IMAGE" \
+            --arg ver "$VERSION" \
+            --arg mode "$SECRETS_MODE" \
+            --slurpfile labels labels.json \
+            --slurpfile secrets secrets.json '
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+            | .containerDefinitions = [
+                .containerDefinitions[]
+                | if .name == $cn then
+                    .image = $img
+                    | .dockerLabels = $labels[0]
+                    | (if $mode == "ssm" then .secrets = $secrets[0] else . end)
+                    | (if $ver != "" then
+                        .environment = ((.environment // [])
+                          | map(select(.name != "APP_VERSION" and .name != "OTEL_SERVICE_VERSION"))
+                          + [{name: "APP_VERSION", value: $ver},
+                             {name: "OTEL_SERVICE_VERSION", value: $ver}])
+                       else . end)
+                  else . end
+              ]
+          ' live.json > task-def.json
+
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def.json --region "$AWS_REGION" \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "Registered $ARN"
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      # ── Deployment configuration ───────────────────────────────────────────
+      # A service left at max=100/min=0 drains the old task BEFORE starting the
+      # new one — samoe-dashboard was down ~5 minutes that way. 200/100 makes
+      # every roll overlap. Skipped for fixed-host-port services, where two
+      # tasks cannot bind the same port.
+      - name: Ensure deployment configuration
+        if: inputs.ensure_deployment_config
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$SERVICE" --region "$AWS_REGION" \
+            --deployment-configuration "maximumPercent=200,minimumHealthyPercent=100" \
+            --query 'service.deploymentConfiguration' --output json
+
+      - name: Roll out
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+          ARN: ${{ steps.register.outputs.arn }}
+        run: |
+          set -euo pipefail
+          # --task-definition is mandatory: --force-new-deployment ALONE just
+          # redeploys whatever revision the service already points at.
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$SERVICE" \
+            --task-definition "$ARN" --force-new-deployment --region "$AWS_REGION" \
+            --query service.serviceName --output text
+
+      - name: Wait for stability
+        id: wait
+        if: inputs.wait_stable
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for $SERVICE to stabilise..."
+          if aws ecs wait services-stable \
+               --cluster "$ECS_CLUSTER" --services "$SERVICE" --region "$AWS_REGION"; then
+            echo "Service stable."
+          else
+            echo "::error::$SERVICE did not stabilise. Recent events:"
+            aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$SERVICE" \
+              --region "$AWS_REGION" --query 'services[0].events[:10].[createdAt,message]' --output text
+            exit 1
+          fi
+
+      - name: Smoke test
+        if: steps.resolve.outputs.smoke != ''
+        env:
+          SMOKE: ${{ steps.resolve.outputs.smoke }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$SMOKE" || echo 000)
+            echo "attempt $i → HTTP $code  ($SMOKE)"
+            [ "$code" = "200" ] && exit 0
+            sleep 10
+          done
+          echo "::error::$SMOKE did not return 200 after rollout"
+          exit 1
+
+      # ── Automatic rollback ─────────────────────────────────────────────────
+      # Any failure after the roll started puts the previously-live task
+      # definition back and waits for it, so a bad deploy self-heals instead of
+      # leaving the service flapping until someone notices.
+      - name: Roll back on failure
+        if: failure() && steps.register.outcome == 'success' && steps.resolve.outputs.previous_arn != ''
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+          PREV: ${{ steps.resolve.outputs.previous_arn }}
+        run: |
+          echo "::warning::Deploy failed — rolling $SERVICE back to $PREV"
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" --service "$SERVICE" \
+            --task-definition "$PREV" --force-new-deployment --region "$AWS_REGION" \
+            --query service.serviceName --output text
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" --services "$SERVICE" --region "$AWS_REGION" \
+            && echo "Rolled back to $PREV." \
+            || echo "::error::Rollback to $PREV did not stabilise — manual intervention required."
+
+      - name: Summary
+        if: always()
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+          ARN: ${{ steps.register.outputs.arn }}
+          PREV: ${{ steps.resolve.outputs.previous_arn }}
+          MODE: ${{ steps.secrets.outputs.mode }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          {
+            echo "### ECS deploy — \`$SERVICE\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| image | \`$IMAGE\` |"
+            echo "| task definition | \`${ARN:-not registered}\` |"
+            echo "| previous | \`${PREV:-none}\` |"
+            echo "| secrets source | \`${MODE:-unknown}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
