@@ -75,6 +75,28 @@ on:
         required: false
         type: string
         default: ""
+      shared_secrets:
+        description: >
+          Comma-separated env names to pull from the SHARED parameter path
+          (<vars.SSM_PREFIX>/shared) instead of this service's own path — e.g.
+          "RABBITMQ_URL,REDIS_URL". Values genuinely common to many services live
+          in one place so rotating them is a single write, not one per consumer.
+          Listed EXPLICITLY rather than merging the whole shared path, because
+          silently handing a service an env var it did not previously have can
+          change how it behaves (a service that sees REDIS_URL may start caching).
+        required: false
+        type: string
+        default: ""
+      extra_secrets:
+        description: >
+          JSON array of {"name","valueFrom"} entries merged in last, overriding
+          both paths. The escape hatch for anything the path convention cannot
+          express — chiefly aliases, where two env names must resolve to the SAME
+          parameter (matching maps both SSO_MACHINE_CLIENT_ID and
+          DCLEAN_SSO_CLIENT_ID onto one value).
+        required: false
+        type: string
+        default: "[]"
       allow_secret_removal:
         description: >
           Permit the generated secrets block to DROP names the live task definition
@@ -192,6 +214,7 @@ jobs:
           fi
 
           SSM_PATH="${IN_SSM_PATH:-$SSM_PREFIX/$SERVICE}"
+          SHARED_PATH="$SSM_PREFIX/shared"
 
           SMOKE="$IN_SMOKE_URL"
           if [ -z "$SMOKE" ] && [ -n "$IN_PUBLIC_HOST" ]; then
@@ -208,13 +231,14 @@ jobs:
             echo "family=$FAMILY"
             echo "internal_host=$INTERNAL_HOST"
             echo "ssm_path=$SSM_PATH"
+            echo "shared_path=$SHARED_PATH"
             echo "smoke=$SMOKE"
             echo "previous_arn=$PREV"
           } >> "$GITHUB_OUTPUT"
 
           echo "service=$SERVICE  container=$CONTAINER  family=$FAMILY"
           echo "internal_host=${INTERNAL_HOST:-<none>}  public_host=${IN_PUBLIC_HOST:-<none>}"
-          echo "ssm_path=$SSM_PATH"
+          echo "ssm_path=$SSM_PATH  shared_path=$SHARED_PATH"
           echo "previous task def=${PREV:-<none>}"
 
       # ── Fetch the live task definition ─────────────────────────────────────
@@ -254,28 +278,58 @@ jobs:
         id: secrets
         env:
           SSM_PATH: ${{ steps.resolve.outputs.ssm_path }}
+          SHARED_PATH: ${{ steps.resolve.outputs.shared_path }}
+          SHARED_NAMES: ${{ inputs.shared_secrets }}
+          EXTRA_SECRETS: ${{ inputs.extra_secrets }}
           CONTAINER: ${{ steps.resolve.outputs.container }}
           ALLOW_REMOVAL: ${{ inputs.allow_secret_removal }}
         run: |
           set -euo pipefail
+          arnify() { # $1 = parameter name → ECS valueFrom entries, one per line of stdin
+            jq --arg region "$AWS_REGION" --arg acct "$AWS_ACCOUNT_ID" \
+               '[ .[] | { name: (split("/") | last),
+                          valueFrom: "arn:aws:ssm:\($region):\($acct):parameter\(.)" } ]'
+          }
+
           NAMES=$(aws ssm get-parameters-by-path \
             --path "$SSM_PATH" --recursive --region "$AWS_REGION" \
             --query 'Parameters[].Name' --output json 2>/dev/null || echo '[]')
+          echo "$NAMES" | arnify > own.json
 
-          COUNT=$(echo "$NAMES" | jq 'length')
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No parameters under $SSM_PATH — inheriting the live task definition's secrets block."
-            echo "mode=inherit" >> "$GITHUB_OUTPUT"
-            echo '[]' > secrets.json
-            exit 0
+          # Shared values, named one by one. Merging the whole shared path would
+          # hand every service env it never had, which is a behaviour change
+          # dressed up as a refactor.
+          echo '[]' > shared.json
+          if [ -n "$SHARED_NAMES" ]; then
+            echo "$SHARED_NAMES" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$' \
+              | jq -R --arg p "$SHARED_PATH" '"\($p)/\(.)"' | jq -s '.' | arnify > shared.json
+            # Prove each one exists rather than registering a definition that
+            # cannot pull it — that failure would surface as a task stuck in
+            # PENDING with a ResourceInitializationError, minutes later.
+            for n in $(jq -r '.[].name' shared.json); do
+              if ! aws ssm get-parameter --name "$SHARED_PATH/$n" --region "$AWS_REGION" >/dev/null 2>&1; then
+                echo "::error::shared_secrets names $n but $SHARED_PATH/$n does not exist."
+                exit 1
+              fi
+            done
           fi
 
-          echo "$NAMES" | jq --arg region "$AWS_REGION" --arg acct "$AWS_ACCOUNT_ID" '
-            [ .[] | {
-                name: (split("/") | last),
-                valueFrom: "arn:aws:ssm:\($region):\($acct):parameter\(.)"
-              } ] | sort_by(.name)
-          ' > secrets.json
+          if ! echo "$EXTRA_SECRETS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::extra_secrets must be a JSON array of {name, valueFrom}."
+            exit 1
+          fi
+          echo "$EXTRA_SECRETS" > extra.json
+
+          # Later wins on a name clash: own path < shared < extra.
+          jq -s 'add | group_by(.name) | map(last) | sort_by(.name)' \
+            own.json shared.json extra.json > secrets.json
+
+          COUNT=$(jq 'length' secrets.json)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "Nothing under $SSM_PATH and no shared/extra entries — inheriting the live task definition's secrets block."
+            echo "mode=inherit" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           # Completeness gate: every name the live definition supplies must still
           # be supplied after the switch.
