@@ -112,6 +112,17 @@ on:
         required: false
         type: string
         default: ""
+      release_tag:
+        description: >
+          Tag to push and publish a GitHub Release for, e.g. v1.2.3 — normally the
+          `tag` output of the uplift-version-bump action. Pushed only AFTER the
+          rollout and smoke test pass, so a failed deploy leaves no orphan tag and
+          the counter does not burn. Empty skips both.
+          The CALLING job must grant `permissions: { contents: write }`; a
+          reusable workflow cannot widen the token beyond what its caller holds.
+        required: false
+        type: string
+        default: ""
 
       smoke_url:
         description: "URL to poll after rollout. Defaults to https://<public_host><health_path> when public_host is set. Empty and no public_host = no smoke test."
@@ -505,6 +516,57 @@ jobs:
           done
           echo "::error::$SMOKE did not return 200 after rollout"
           exit 1
+
+      # ── Release surface ────────────────────────────────────────────────────
+      # Reached only when the rollout and the smoke test both passed, so the tag
+      # always names something that actually served traffic. A git tag and a
+      # GitHub Release are separate surfaces — nothing creates the Release from
+      # the tag on its own.
+      - name: Checkout (for the release tag)
+        if: inputs.release_tag != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push release tag
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+          SERVICE: ${{ steps.resolve.outputs.service }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::warning::$TAG already exists — leaving it alone."
+            exit 0
+          fi
+          # actions/checkout sets no git identity; annotated tags need one.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$SERVICE $TAG — automated deploy (${GITHUB_SHA::7})"
+          # --no-verify: several repos have a husky pre-push hook that runs the
+          # test suite, which would block a tag push for reasons unrelated to it.
+          git push --no-verify origin "$TAG"
+          echo "Tagged $TAG"
+
+      # curl rather than `gh release create`: the uplift-deploy runner has no gh
+      # CLI. Non-fatal, so a Release hiccup never fails a green deploy.
+      - name: Publish GitHub Release
+        if: inputs.release_tag != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          payload=$(node -e 'console.log(JSON.stringify({tag_name: process.env.TAG, name: process.env.TAG, generate_release_notes: true}))')
+          if curl -sf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" \
+              -d "$payload" >/dev/null; then
+            echo "Published Release $TAG"
+          else
+            echo "::warning::Could not publish Release $TAG (non-fatal)"
+          fi
 
       # ── Automatic rollback ─────────────────────────────────────────────────
       # Any failure after the roll started puts the previously-live task

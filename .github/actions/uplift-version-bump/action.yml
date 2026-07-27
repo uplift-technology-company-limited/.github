@@ -1,0 +1,82 @@
+name: Uplift version bump
+description: >
+  Compute the next vX.Y.Z from the repository's git tags. The tag is the source
+  of truth for what shipped — package.json drifts because people forget to bump
+  it, whereas a tag created by the deploy itself cannot lie. Auto-bumps patch on
+  every deploy (a de-facto build counter); minor/major are for meaningful
+  releases. This only COMPUTES the number: the tag is pushed at the end of a
+  green rollout, so a failed deploy leaves no orphan tag and the counter does not
+  burn. Encodes the upliftcontrolversion convention in one place instead of ~20
+  hand-copied lines per repo.
+
+inputs:
+  bump:
+    description: "patch | minor | major. Anything else (including empty) is treated as patch."
+    required: false
+    default: patch
+  prefix:
+    description: "Tag prefix. `v` gives v1.2.3."
+    required: false
+    default: "v"
+
+outputs:
+  tag:
+    description: "Full tag, e.g. v1.2.3 — push this after a successful rollout."
+    value: ${{ steps.bump.outputs.tag }}
+  version:
+    description: "Bare version, e.g. 1.2.3 — feeds APP_VERSION and OTEL_SERVICE_VERSION."
+    value: ${{ steps.bump.outputs.version }}
+  previous:
+    description: "The tag this was bumped from."
+    value: ${{ steps.bump.outputs.previous }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute release version
+      id: bump
+      shell: bash
+      env:
+        BUMP: ${{ inputs.bump }}
+        PREFIX: ${{ inputs.prefix }}
+      run: |
+        set -euo pipefail
+
+        # Needs the full history and tags. actions/checkout defaults to a shallow
+        # clone with no tags, which silently yields v0.0.1 forever.
+        git fetch --tags --quiet origin || true
+        if [ -z "$(git tag --list "${PREFIX}*")" ] && [ "$(git rev-list --count HEAD 2>/dev/null || echo 0)" -le 1 ]; then
+          echo "::warning::No tags and a shallow history — did the caller set fetch-depth: 0? Versions will restart from ${PREFIX}0.0.1."
+        fi
+
+        # sort -V gives the global highest semver. `git describe --abbrev=0` is
+        # topology-NEAREST and can pick a lower base on a merge-heavy history,
+        # producing a version that goes backwards.
+        LATEST=$(git tag --list "${PREFIX}*" | sort -V | tail -n1)
+        LATEST=${LATEST:-${PREFIX}0.0.0}
+        PREV="$LATEST"
+
+        IFS='.' read -r MAJ MIN PAT <<< "${LATEST#$PREFIX}"
+        MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
+
+        case "${BUMP:-patch}" in
+          major) MAJ=$((MAJ + 1)); MIN=0; PAT=0 ;;
+          minor) MIN=$((MIN + 1)); PAT=0 ;;
+          *)     PAT=$((PAT + 1)) ;;
+        esac
+
+        TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
+        # A tag can already exist when a previous deploy pushed it but the run
+        # was re-triggered, or when someone tagged by hand. Walk forward rather
+        # than failing the deploy.
+        while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; do
+          PAT=$((PAT + 1))
+          TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
+        done
+
+        {
+          echo "tag=$TAG"
+          echo "version=${TAG#$PREFIX}"
+          echo "previous=$PREV"
+        } >> "$GITHUB_OUTPUT"
+        echo "$PREV → $TAG (bump=${BUMP:-patch})"

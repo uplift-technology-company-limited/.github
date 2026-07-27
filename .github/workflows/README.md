@@ -10,8 +10,9 @@ every time.
 
 | Path | What it is |
 |---|---|
-| `.github/workflows/ecs-deploy.yml` | Reusable workflow — task definition, Traefik labels, secrets, rollout, rollback |
+| `.github/workflows/ecs-deploy.yml` | Reusable workflow — task definition, Traefik labels, secrets, rollout, rollback, release tag |
 | `.github/actions/ecr-build-push/` | Composite action — ECR login, image tag, native build, push |
+| `.github/actions/uplift-version-bump/` | Composite action — next `vX.Y.Z` from git tags (the upliftcontrolversion convention) |
 
 ## Division of labour
 
@@ -49,22 +50,35 @@ jobs:
 
       # ... repo-specific gates: install, typecheck, tests ...
 
+      # Compute the version BEFORE the build so a frontend can bake it into the
+      # bundle. Backends only need it at runtime, but computing it here keeps one
+      # shape for both.
+      - id: ver
+        uses: uplift-technology-company-limited/.github/.github/actions/uplift-version-bump@v1
+        with:
+          bump: ${{ inputs.bump }}
+
       - id: build
         uses: uplift-technology-company-limited/.github/.github/actions/ecr-build-push@v1
         with:
           ecr_repo: <ecr-repo>
+          aws_region: ${{ vars.AWS_REGION }}
           github_token_secret: "true"   # if the Dockerfile pulls @uplift-*/ packages
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
     needs: build
+    permissions:
+      contents: write        # required to push the release tag
     uses: uplift-technology-company-limited/.github/.github/workflows/ecs-deploy.yml@v1
     with:
       service:        <ecs-service>
       image:          ${{ needs.build.outputs.image }}
       container_port: <port>
       public_host:    <host>.uplifttech.co   # omit entirely for internal-only
+      version:        ${{ needs.build.outputs.version }}
+      release_tag:    ${{ needs.build.outputs.tag }}
     secrets: inherit
 ```
 
@@ -108,6 +122,29 @@ safe — a repo can move to this workflow before its secrets have been migrated.
 
 The task **execution role** needs `ssm:GetParameters` on the path and `kms:Decrypt`
 on the `aws/ssm` key.
+
+## Versioning
+
+`uplift-version-bump` encodes the upliftcontrolversion convention so it lives in
+one place rather than ~20 hand-copied lines per repo:
+
+- **The git tag is the source of truth**, not `package.json` — a tag created by
+  the deploy itself cannot lie about what shipped.
+- **`sort -V`, not `git describe --abbrev=0`.** Describe is topology-nearest and
+  on a merge-heavy history can pick a lower base, producing a version that goes
+  backwards.
+- **Patch auto-bumps on every deploy** (a build counter); minor/major are for
+  meaningful releases.
+- **The tag is pushed only after the rollout AND the smoke test pass**, by
+  `ecs-deploy` itself. A failed deploy therefore leaves no orphan tag and does
+  not burn the counter.
+
+The caller needs `fetch-depth: 0` on its checkout — the default shallow clone has
+no tags, and versions would silently restart from `v0.0.1` forever. The action
+warns if it detects that shape.
+
+`version` feeds `APP_VERSION` and `OTEL_SERVICE_VERSION` in the task definition,
+so telemetry and `/version` cannot drift from what actually shipped.
 
 ## Things this workflow gets right that are easy to get wrong
 
