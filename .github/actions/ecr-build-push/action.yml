@@ -9,6 +9,20 @@ inputs:
   ecr_repo:
     description: "ECR repository name."
     required: true
+  aws_region:
+    description: >
+      Target region. Composite actions CANNOT read the `vars` context — that is a
+      workflow-only capability — so the CALLER must pass vars.AWS_REGION through
+      this input explicitly. Falls back to $AWS_REGION / $AWS_DEFAULT_REGION from the job env.
+    required: false
+    default: ""
+  aws_account_id:
+    description: >
+      Registry account. Leave empty to derive it from `sts get-caller-identity`,
+      which is always correct for whatever credentials the runner actually holds
+      and cannot drift out of sync with a variable.
+    required: false
+    default: ""
   dockerfile:
     description: "Path to the Dockerfile."
     required: false
@@ -48,23 +62,42 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Log in to Amazon ECR
+    # Resolved once and exported, because the two steps below both need them and
+    # a composite action has no `vars` context of its own to fall back on.
+    - name: Resolve registry
       shell: bash
       env:
-        AWS_REGION: ${{ vars.AWS_REGION }}
-        AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        IN_REGION: ${{ inputs.aws_region }}
+        IN_ACCOUNT: ${{ inputs.aws_account_id }}
       run: |
         set -euo pipefail
-        aws ecr get-login-password --region "$AWS_REGION" \
-          | docker login --username AWS --password-stdin \
-            "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+        REGION="${IN_REGION:-${AWS_REGION:-${AWS_DEFAULT_REGION:-}}}"
+        if [ -z "$REGION" ]; then
+          echo "::error::No region resolved. The caller must pass aws_region (from the org variable AWS_REGION) — a composite action has no vars context of its own."
+          exit 1
+        fi
+        ACCOUNT="$IN_ACCOUNT"
+        if [ -z "$ACCOUNT" ]; then
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text --region "$REGION")
+        fi
+        {
+          echo "ECR_REGION=$REGION"
+          echo "ECR_ACCOUNT=$ACCOUNT"
+          echo "ECR_REGISTRY=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+        } >> "$GITHUB_ENV"
+        echo "Registry: $ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+
+    - name: Log in to Amazon ECR
+      shell: bash
+      run: |
+        set -euo pipefail
+        aws ecr get-login-password --region "$ECR_REGION" \
+          | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
     - name: Build and push
       id: build
       shell: bash
       env:
-        AWS_REGION: ${{ vars.AWS_REGION }}
-        AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
         ECR_REPO: ${{ inputs.ecr_repo }}
         DOCKERFILE: ${{ inputs.dockerfile }}
         BUILD_CONTEXT: ${{ inputs.context }}
@@ -75,7 +108,7 @@ runs:
       run: |
         set -euo pipefail
         SHA=$(git rev-parse --short HEAD)
-        REG="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+        REG="$ECR_REGISTRY"
         IMAGE="$REG/$ECR_REPO:$SHA"
 
         args=(build -f "$DOCKERFILE" -t "$IMAGE")
