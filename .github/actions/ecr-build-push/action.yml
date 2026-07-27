@@ -1,0 +1,98 @@
+name: ECR build and push
+description: >
+  Log in to ECR, compute a deterministic image tag from the git SHA, build the
+  image natively (no QEMU — the org runner is arm64/Graviton, matching the ECS
+  cluster) and push both the SHA tag and :latest. Emits the full image URI for
+  the reusable ecs-deploy workflow to consume.
+
+inputs:
+  ecr_repo:
+    description: "ECR repository name."
+    required: true
+  dockerfile:
+    description: "Path to the Dockerfile."
+    required: false
+    default: "Dockerfile"
+  context:
+    description: "Build context."
+    required: false
+    default: "."
+  build_args:
+    description: "Newline-separated KEY=VALUE build args."
+    required: false
+    default: ""
+  github_token_secret:
+    description: >
+      When 'true', mounts $GITHUB_TOKEN as a BuildKit secret named `github_token`.
+      Required by every Dockerfile that installs @uplift-technology-company-limited/*
+      packages from GitHub Packages. The token is mounted, never baked into a layer.
+    required: false
+    default: "false"
+  platform:
+    description: "Target platform. Empty = native (correct on the arm64 runner for the arm64 cluster; setting this forces slow emulation)."
+    required: false
+    default: ""
+  push_latest:
+    description: "Also tag and push :latest."
+    required: false
+    default: "true"
+
+outputs:
+  image:
+    description: "Full image URI including the SHA tag — pass this to ecs-deploy."
+    value: ${{ steps.build.outputs.image }}
+  tag:
+    description: "The short SHA used as the image tag."
+    value: ${{ steps.build.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to Amazon ECR
+      shell: bash
+      env:
+        AWS_REGION: ${{ vars.AWS_REGION }}
+        AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      run: |
+        set -euo pipefail
+        aws ecr get-login-password --region "$AWS_REGION" \
+          | docker login --username AWS --password-stdin \
+            "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+
+    - name: Build and push
+      id: build
+      shell: bash
+      env:
+        AWS_REGION: ${{ vars.AWS_REGION }}
+        AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+        ECR_REPO: ${{ inputs.ecr_repo }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        BUILD_CONTEXT: ${{ inputs.context }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+        USE_GH_SECRET: ${{ inputs.github_token_secret }}
+        PLATFORM: ${{ inputs.platform }}
+        PUSH_LATEST: ${{ inputs.push_latest }}
+      run: |
+        set -euo pipefail
+        SHA=$(git rev-parse --short HEAD)
+        REG="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+        IMAGE="$REG/$ECR_REPO:$SHA"
+
+        args=(build -f "$DOCKERFILE" -t "$IMAGE")
+        [ "$PUSH_LATEST" = "true" ] && args+=(-t "$REG/$ECR_REPO:latest")
+        [ -n "$PLATFORM" ] && args+=(--platform "$PLATFORM")
+        [ "$USE_GH_SECRET" = "true" ] && args+=(--secret id=github_token,env=GITHUB_TOKEN)
+
+        while IFS= read -r ba; do
+          [ -n "$ba" ] && args+=(--build-arg "$ba")
+        done <<< "$BUILD_ARGS"
+
+        args+=("$BUILD_CONTEXT")
+
+        DOCKER_BUILDKIT=1 docker "${args[@]}"
+        docker push "$IMAGE"
+        [ "$PUSH_LATEST" = "true" ] && docker push "$REG/$ECR_REPO:latest"
+
+        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        echo "tag=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Built and pushed $IMAGE"
