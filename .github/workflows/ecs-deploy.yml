@@ -534,17 +534,34 @@ jobs:
             --task-definition "$ARN" --force-new-deployment --region "$AWS_REGION" \
             --query service.serviceName --output text
 
+      # `wait services-stable` is NOT sufficient on its own. When the deployment
+      # circuit breaker rolls a failed rollout back, the service becomes stable
+      # again — on the OLD revision — and the wait returns success. saas reported
+      # a fully green deploy that way while its tasks had failed four times to
+      # read SSM and ECS had quietly reverted it. So the wait is followed by an
+      # assertion that the service is actually running what we just registered.
       - name: Wait for stability
         id: wait
         if: inputs.wait_stable
         env:
           SERVICE: ${{ steps.resolve.outputs.service }}
+          EXPECT: ${{ steps.register.outputs.arn }}
         run: |
           set -euo pipefail
           echo "Waiting for $SERVICE to stabilise..."
           if aws ecs wait services-stable \
                --cluster "$ECS_CLUSTER" --services "$SERVICE" --region "$AWS_REGION"; then
-            echo "Service stable."
+            ACTUAL=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$SERVICE" \
+              --region "$AWS_REGION" --query 'services[0].taskDefinition' --output text)
+            if [ "$ACTUAL" != "$EXPECT" ]; then
+              echo "::error::$SERVICE stabilised on $ACTUAL, not the $EXPECT this run registered."
+              echo "::error::That is what a deployment-circuit-breaker rollback looks like: the tasks failed to start and ECS reverted. Recent events:"
+              aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$SERVICE" \
+                --region "$AWS_REGION" --query 'services[0].events[:12].[createdAt,message]' --output text
+              echo "::error::A 'Fetching secret data from SSM Parameter Store' failure here means the task EXECUTION role cannot read the parameters — grant ssm:GetParameters on the path and kms:Decrypt on the aws/ssm key."
+              exit 1
+            fi
+            echo "Service stable on $ACTUAL."
           else
             echo "::error::$SERVICE did not stabilise. Recent events:"
             aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$SERVICE" \
