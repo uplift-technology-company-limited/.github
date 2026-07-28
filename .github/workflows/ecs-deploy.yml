@@ -48,6 +48,17 @@ on:
         required: false
         type: string
         default: ""
+      router_name:
+        description: >
+          Base name for the Traefik router and service labels. Defaults to
+          `service`. Set it where the ECS service name and the routing name
+          already differ — uplift-sso routes as `sso`, cms-api as `cms`. Letting
+          the name drift would rename the routers mid-rollout, so both the old
+          and the new would briefly match the same Host with no meaningful
+          priority between them.
+        required: false
+        type: string
+        default: ""
 
       public_host:
         description: "Public hostname (e.g. account.uplifttech.co). Leave empty for an internal-only service — no public Traefik router is emitted."
@@ -219,6 +230,7 @@ jobs:
           IN_FAMILY: ${{ inputs.task_family }}
           IN_INTERNAL_HOST: ${{ inputs.internal_host }}
           IN_SSM_PATH: ${{ inputs.ssm_path }}
+          IN_ROUTER: ${{ inputs.router_name }}
           IN_PUBLIC_HOST: ${{ inputs.public_host }}
           IN_SMOKE_URL: ${{ inputs.smoke_url }}
           IN_HEALTH_PATH: ${{ inputs.health_path }}
@@ -232,10 +244,11 @@ jobs:
           if [ "$IN_INTERNAL_HOST" = "-" ]; then
             INTERNAL_HOST=""
           else
-            INTERNAL_HOST="${IN_INTERNAL_HOST:-$SERVICE.$INTERNAL_DOMAIN}"
+            INTERNAL_HOST="${IN_INTERNAL_HOST:-${IN_ROUTER:-$SERVICE}.$INTERNAL_DOMAIN}"
           fi
 
           SSM_PATH="${IN_SSM_PATH:-$SSM_PREFIX/$SERVICE}"
+          ROUTER="${IN_ROUTER:-$SERVICE}"
           SHARED_PATH="$SSM_PREFIX/shared"
 
           SMOKE="$IN_SMOKE_URL"
@@ -254,6 +267,7 @@ jobs:
             echo "internal_host=$INTERNAL_HOST"
             echo "ssm_path=$SSM_PATH"
             echo "shared_path=$SHARED_PATH"
+            echo "router=$ROUTER"
             echo "smoke=$SMOKE"
             echo "previous_arn=$PREV"
           } >> "$GITHUB_OUTPUT"
@@ -405,7 +419,7 @@ jobs:
       - name: Build Traefik labels
         id: labels
         env:
-          SERVICE: ${{ steps.resolve.outputs.service }}
+          SERVICE: ${{ steps.resolve.outputs.router }}
           PUBLIC_HOST: ${{ inputs.public_host }}
           INTERNAL_HOST: ${{ steps.resolve.outputs.internal_host }}
           PORT: ${{ inputs.container_port }}
