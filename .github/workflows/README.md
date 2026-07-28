@@ -123,6 +123,26 @@ safe — a repo can move to this workflow before its secrets have been migrated.
 The task **execution role** needs `ssm:GetParameters` on the path and `kms:Decrypt`
 on the `aws/ssm` key.
 
+## Plain environment
+
+`environment` takes a JSON object upserted over whatever the live task definition
+already carries:
+
+```yaml
+      environment: >-
+        {"NODE_ENV":"production","OTEL_ENDPOINT":"http://tempo.internal.example:4318"}
+```
+
+Inheritance alone preserves such values but cannot **self-heal** one that went
+missing, and gives no declarative way to change it. Several repos had grown a
+hand-written "render task definition + re-assert config" step for exactly this
+reason; that belongs here instead. Keys not listed are left untouched, so it
+composes with inheritance rather than replacing it.
+
+Secrets go through `ssm_path` / `shared_secrets`, never here — this block ends up
+in plain `environment`, which is readable by anyone who can describe the task
+definition.
+
 ## Versioning
 
 `uplift-version-bump` encodes the upliftcontrolversion convention so it lives in

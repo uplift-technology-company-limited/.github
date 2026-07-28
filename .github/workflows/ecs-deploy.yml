@@ -107,6 +107,17 @@ on:
         type: boolean
         default: false
 
+      environment:
+        description: >
+          JSON object of plain (non-secret) env to UPSERT over what the live task
+          definition already carries — service URLs, OTEL settings, NODE_ENV and
+          the like. Inheriting alone preserves such values but cannot self-heal
+          one that went missing, and offers no declarative way to change it;
+          every repo that re-asserted its config in a hand-written render step
+          was really asking for this. Keys not listed are left untouched.
+        required: false
+        type: string
+        default: "{}"
       version:
         description: "Release version injected as APP_VERSION + OTEL_SERVICE_VERSION. Empty leaves whatever the live task def has."
         required: false
@@ -365,6 +376,25 @@ jobs:
           echo "Generated $COUNT secret entries from $SSM_PATH:"
           jq -r '.[].name' secrets.json | sed 's/^/  - /'
 
+      # ── Plain environment overrides ────────────────────────────────────────
+      - name: Build environment overrides
+        id: envover
+        env:
+          ENV_JSON: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          if ! echo "$ENV_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::environment must be a JSON object of {\"NAME\": \"value\"}."
+            exit 1
+          fi
+          echo "$ENV_JSON" | jq 'to_entries | map({name: .key, value: (.value|tostring)})' > envover.json
+          N=$(jq 'length' envover.json)
+          echo "count=$N" >> "$GITHUB_OUTPUT"
+          if [ "$N" -gt 0 ]; then
+            echo "Upserting $N environment entries:"
+            jq -r '.[] | "  \(.name) = \(.value)"' envover.json
+          fi
+
       # ── Traefik labels ─────────────────────────────────────────────────────
       # RULE (learned the hard way, 2026-07-26): as soon as a container defines
       # more than one Traefik service, EVERY router must name its service
@@ -431,7 +461,8 @@ jobs:
             --arg ver "$VERSION" \
             --arg mode "$SECRETS_MODE" \
             --slurpfile labels labels.json \
-            --slurpfile secrets secrets.json '
+            --slurpfile secrets secrets.json \
+            --slurpfile envover envover.json '
             del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                 .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
             | .containerDefinitions = [
@@ -440,6 +471,10 @@ jobs:
                     .image = $img
                     | .dockerLabels = $labels[0]
                     | (if $mode == "ssm" then .secrets = $secrets[0] else . end)
+                    | (if ($envover[0] | length) > 0 then
+                        .environment = (((.environment // []) + $envover[0])
+                          | group_by(.name) | map(last) | sort_by(.name))
+                       else . end)
                     | (if $ver != "" then
                         .environment = ((.environment // [])
                           | map(select(.name != "APP_VERSION" and .name != "OTEL_SERVICE_VERSION"))
