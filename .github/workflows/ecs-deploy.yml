@@ -43,6 +43,24 @@ on:
         required: false
         type: string
         default: ""
+
+      log_destination:
+        description: >
+          Where this service's logs go. Empty (the default) inherits whatever
+          the live task definition already has, which is the safe no-op for
+          every repo that has not opted in.
+
+          Set `loki` to ship logs to Grafana Loki: the main container switches
+          to the awsfirelens driver and a Fluent Bit sidecar is added if it is
+          not already there. This is what puts a service into Grafana, and it
+          lives here rather than in each repo's scripts/deploy.sh so the wiring
+          lands once instead of being copy-pasted per service.
+
+          `cloudwatch` forces the plain awslogs driver back — useful to bisect
+          whether Loki itself is the problem during an incident.
+        required: false
+        type: string
+        default: ""
       task_family:
         description: "Task definition family. Defaults to `service`."
         required: false
@@ -453,12 +471,41 @@ jobs:
           ' > labels.json
           echo "Traefik labels:"; jq -r 'to_entries[] | "  \(.key) = \(.value)"' labels.json
 
+      # ── Fluent Bit's own log group ─────────────────────────────────────────
+      # The sidecar writes its diagnostics to CloudWatch. Execution roles here
+      # do NOT carry logs:CreateLogGroup, so its awslogs-create-group option
+      # fails, the sidecar crashloops, and the main container goes down with it
+      # through dependsOn. Creating the group up front is what keeps enabling
+      # Loki from being an outage.
+      - name: Ensure firelens log group
+        if: inputs.log_destination == 'loki'
+        env:
+          SERVICE: ${{ steps.resolve.outputs.service }}
+        run: |
+          set -euo pipefail
+          GROUP="/ecs/${SERVICE}-firelens"
+          FOUND=$(aws logs describe-log-groups \
+            --log-group-name-prefix "$GROUP" --region "$AWS_REGION" \
+            --query "length(logGroups[?logGroupName=='$GROUP'])" --output text)
+          if [ "$FOUND" = "1" ]; then
+            echo "$GROUP already exists"
+          else
+            aws logs create-log-group --log-group-name "$GROUP" --region "$AWS_REGION"
+            aws logs put-retention-policy --log-group-name "$GROUP" \
+              --retention-in-days 7 --region "$AWS_REGION"
+            echo "created $GROUP (7-day retention)"
+          fi
+
       # ── Register the task definition ───────────────────────────────────────
       # Inherit-and-patch from the LIVE definition, so execution/task roles,
       # network mode, log configuration, sidecars, ulimits and plain env all
       # carry over. Only image, version env, labels and (optionally) secrets
       # are replaced. The container is selected BY NAME so a firelens sidecar
       # never gets patched by accident.
+      #
+      # log_destination is the exception to "inherit": when set it rewrites the
+      # main container's logConfiguration and, for loki, appends the Fluent Bit
+      # sidecar if the task does not already have one.
       - name: Register task definition
         id: register
         env:
@@ -467,6 +514,8 @@ jobs:
           IMAGE: ${{ inputs.image }}
           VERSION: ${{ inputs.version }}
           SECRETS_MODE: ${{ steps.secrets.outputs.mode }}
+          SERVICE: ${{ steps.resolve.outputs.service }}
+          LOG_DESTINATION: ${{ inputs.log_destination }}
         run: |
           set -euo pipefail
           jq \
@@ -474,6 +523,9 @@ jobs:
             --arg img "$IMAGE" \
             --arg ver "$VERSION" \
             --arg mode "$SECRETS_MODE" \
+            --arg svc "$SERVICE" \
+            --arg logdest "$LOG_DESTINATION" \
+            --arg region "$AWS_REGION" \
             --slurpfile labels labels.json \
             --slurpfile secrets secrets.json \
             --slurpfile envover envover.json '
@@ -495,8 +547,70 @@ jobs:
                           + [{name: "APP_VERSION", value: $ver},
                              {name: "OTEL_SERVICE_VERSION", value: $ver}])
                        else . end)
+                    | (if $logdest == "loki" then
+                        # `job` is the label everyone queries by, and every
+                        # existing value is an ECS service name — so use $svc,
+                        # not the container name, which differs on uplift-sso.
+                        # "$container_name" is literal text for Fluent Bit here;
+                        # jq only interpolates \(...) inside strings.
+                        .logConfiguration = {
+                          logDriver: "awsfirelens",
+                          options: {
+                            Name: "loki",
+                            host: "loki.internal.uplifttech.co",
+                            port: "3100",
+                            labels: ("job=" + $svc),
+                            remove_keys: "source,container_id",
+                            line_format: "json",
+                            label_keys: "$container_name",
+                            auto_kubernetes_labels: "off"
+                          }
+                        }
+                        | .dependsOn = [{containerName: "log_router", condition: "START"}]
+                       elif $logdest == "cloudwatch" then
+                        .logConfiguration = {
+                          logDriver: "awslogs",
+                          options: {
+                            "awslogs-group": ("/ecs/" + $svc),
+                            "awslogs-region": $region,
+                            "awslogs-stream-prefix": "ecs",
+                            "awslogs-create-group": "true"
+                          }
+                        }
+                        | del(.dependsOn)
+                       else . end)
                   else . end
               ]
+            # Append the sidecar only when it is missing, so re-running against
+            # an already-migrated task is a no-op rather than a duplicate.
+            | (if $logdest == "loki"
+                  and ([.containerDefinitions[].name] | index("log_router") | not)
+               then .containerDefinitions += [{
+                      name: "log_router",
+                      image: "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable",
+                      essential: true,
+                      memoryReservation: 64,
+                      cpu: 0,
+                      user: "0",
+                      firelensConfiguration: {
+                        type: "fluentbit",
+                        options: {"enable-ecs-log-metadata": "true"}
+                      },
+                      logConfiguration: {
+                        logDriver: "awslogs",
+                        options: {
+                          "awslogs-group": ("/ecs/" + $svc + "-firelens"),
+                          "awslogs-region": $region,
+                          "awslogs-stream-prefix": "fluentbit"
+                        }
+                      }
+                    }]
+               else . end)
+            # Dropping back to cloudwatch must also remove the now-orphaned
+            # sidecar, or ECS keeps starting a Fluent Bit nothing feeds.
+            | (if $logdest == "cloudwatch" then
+                 .containerDefinitions = [.containerDefinitions[] | select(.name != "log_router")]
+               else . end)
           ' live.json > task-def.json
 
           ARN=$(aws ecs register-task-definition \
