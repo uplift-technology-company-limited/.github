@@ -1,0 +1,350 @@
+name: Homelab Deploy (reusable)
+
+# Single source of truth for deploying a container to the home tier on
+# uplift-server-01 — the `ecs-deploy.yml` twin for everything that does not run
+# in AWS.
+#
+# WHY THIS EXISTS, AND WHY IT LOOKS NOTHING LIKE ecs-deploy
+#   On uplift-server-01 the CI runner is deliberately powerless. The runner user
+#   (`ghrunner`) drives its own ROOTLESS dockerd — a different image store from
+#   the system docker that actually runs the services — is not a member of group
+#   `docker`, and is firewalled off from loopback, the LAN and the docker
+#   bridges. It cannot see, let alone restart, a single running container.
+#
+#   The one channel from CI to the running services is ssh to the box's tailscale
+#   address, landing on a restricted user whose authorized_keys entry pins a
+#   FORCED COMMAND. That forced command runs a root-owned script which validates
+#   what it was handed and does, for exactly one service:
+#       docker compose -f /srv/stacks/<tier>/<service>.yml pull && up -d
+#
+#   The compose files themselves are owned by a GitOps agent reconciling them
+#   from the `infra` repo. CI CANNOT EDIT THEM, and that is the whole point of
+#   the design: a compromised workflow, or a careless one, cannot rewrite what
+#   the box runs — only ask it to re-pull one service it already knows about.
+#   This workflow therefore never attempts to write a compose file, never passes
+#   an image reference to the box, and must never grow the ability to.
+#
+#   Because CI cannot edit the compose file, the compose file pins the MOVING
+#   `:uat` tag and the box-side script pulls it. The image is already in ECR by
+#   the time this workflow runs (see the `ecr-build-push-home` action); all this
+#   does is ask the box to go and get it.
+#
+# DIVISION OF LABOUR
+#   caller repo  → language setup, gates, docker build, ECR push  (app-specific)
+#   this workflow → branch gate, the ssh deploy call, smoke test, release tag
+#
+# NO IDENTIFIERS ARE HARDCODED HERE. This repo is public; the box's address, its
+# host key and the deploy key all arrive as secrets from the calling repository.
+#
+# PIN A TAG, NOT A BRANCH. Callers must reference @v1 (or a newer major), never
+# @main — a bug here would otherwise break every repo's deploy simultaneously.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: >
+          Compose service name. This is ALSO the compose file basename the far
+          side resolves: /srv/stacks/<tier>/<service>.yml. It is sent verbatim to
+          the forced command, which validates it again on its own side.
+        required: true
+        type: string
+      public_host:
+        description: "Public hostname the smoke test polls, e.g. sawathrm-uat.uplifttech.dev."
+        required: true
+        type: string
+      version:
+        description: >
+          The version the newly built image reports. The smoke test looks for this
+          string in the response body — it is what proves the revision that just
+          built is the one now serving.
+        required: true
+        type: string
+
+      tier:
+        description: >
+          `uat` or `dev`. Selects the stack directory: /srv/stacks/<tier>/. Only
+          those two values are accepted and anything else is a hard failure,
+          because this value is interpolated into the command sent over ssh —
+          the far side validates it too, but a workflow that can send arbitrary
+          strings down a deploy channel is a workflow one typo away from being
+          an injection primitive.
+        required: false
+        type: string
+        default: "uat"
+      smoke_path:
+        description: "Path appended to public_host for the smoke test."
+        required: false
+        type: string
+        default: "/health"
+      release_tag:
+        description: >
+          Tag to push, e.g. v1.2.3 — normally the `tag` output of the
+          uplift-version-bump action. Pushed only AFTER a green smoke test, so a
+          failed deploy leaves no orphan tag and the counter does not burn. Empty
+          skips it.
+        required: false
+        type: string
+        default: ""
+      smoke_retries:
+        description: "How many times to poll before giving up."
+        required: false
+        type: number
+        default: 20
+      smoke_interval:
+        description: "Seconds between smoke-test attempts."
+        required: false
+        type: number
+        default: 15
+      deploy_branch:
+        description: >
+          Branch this tier ships from. UAT ships from `uat`, production from
+          `main`; neither ever ships from a feature branch.
+        required: false
+        type: string
+        default: "uat"
+
+    secrets:
+      DEPLOY_HOST:
+        description: >
+          The box's tailscale address. Include the restricted deploy user
+          (`deployer@100.x.y.z`) unless the runner's ~/.ssh/config already pins
+          it — the runner user is `ghrunner`, which is NOT the account the forced
+          command hangs off, and ssh would otherwise default to it and be
+          refused. Whatever host form is used here must match the host field of
+          DEPLOY_HOST_KEY.
+        required: true
+      DEPLOY_SSH_KEY:
+        description: "Private key for the restricted deploy user, whose authorized_keys entry pins the forced command."
+        required: true
+      DEPLOY_HOST_KEY:
+        description: >
+          The box's public host key as a single known_hosts line, e.g.
+          `100.x.y.z ssh-ed25519 AAAA...`. Pinned rather than trusted on first
+          use — see the deploy step.
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }} (${{ inputs.tier }})
+    runs-on: ["self-hosted", "uplift-server-01"]
+    timeout-minutes: 30
+
+    # Needed to push the release tag. Declared here so the contract is readable
+    # rather than implied; a reusable workflow cannot widen the token beyond
+    # what its caller holds, so THE CALLING JOB MUST ALSO GRANT
+    # `permissions: { contents: write }` or this job will not start.
+    permissions:
+      contents: write
+
+    steps:
+      # ── Preconditions ──────────────────────────────────────────────────────
+      - name: Guard — must deploy from the tier's branch
+        env:
+          GH_REF: ${{ github.ref }}
+          DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$GH_REF" != "refs/heads/$DEPLOY_BRANCH" ]; then
+            echo "::error::Deploy must run from $DEPLOY_BRANCH (got $GH_REF). Branch gate: feature → $DEPLOY_BRANCH → deploy. UAT ships from uat, production ships from main, and neither ever ships from a feature branch."
+            exit 1
+          fi
+
+      # An allowlist, not a pattern match. `tier` is pasted into the command sent
+      # down the ssh channel, and the far side's validating regex is the only
+      # other thing standing between a bad value and a root-owned script. Two
+      # known-good strings is the entire universe of legal values, so say so.
+      - name: Guard — tier is one of the two known tiers
+        env:
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -euo pipefail
+          case "$TIER" in
+            uat|dev) echo "tier=$TIER" ;;
+            *)
+              echo "::error::tier must be exactly 'uat' or 'dev' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
+              exit 1
+              ;;
+          esac
+
+      - name: Guard — deploy secrets are present
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$DEPLOY_HOST" ]     || missing="$missing DEPLOY_HOST"
+          [ -n "$DEPLOY_SSH_KEY" ]  || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$DEPLOY_HOST_KEY" ] || missing="$missing DEPLOY_HOST_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing deploy secrets:$missing — pass them from the caller (secrets: inherit, or named explicitly)."
+            exit 1
+          fi
+
+      # ── Ask the box to re-pull one service ─────────────────────────────────
+      # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
+      # whatever is sent arrives as $SSH_ORIGINAL_COMMAND and its exact bytes are
+      # matched against a validating regex before anything runs. An action that
+      # wraps the payload in its own shell preamble (`set -e`, an `export`
+      # prologue, a heredoc) sends something that regex rejects, and the failure
+      # reads as an authentication problem rather than what it is.
+      #
+      # THE HOST KEY IS PINNED. StrictHostKeyChecking=no on a deploy channel
+      # means the channel accepts any host key, which means it accepts a
+      # machine-in-the-middle — on a tailscale address that is a smaller risk
+      # than on the open internet, but we hold the real fingerprint, so there is
+      # no reason to accept anything else. IdentitiesOnly stops ssh offering any
+      # other key the runner happens to have and getting itself rate-limited.
+      #
+      # The remote script's stdout IS the deploy log — `docker compose pull` and
+      # `up -d` output — and its exit code IS the deploy's exit code, so neither
+      # is swallowed.
+      - name: Deploy over ssh
+        id: deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+          TIER: ${{ inputs.tier }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY_FILE="$RUNNER_TEMP/homelab_deploy_key"
+          KNOWN_HOSTS="$RUNNER_TEMP/homelab_known_hosts"
+
+          # printf, not echo: the key must end in exactly one newline or OpenSSH
+          # rejects it as malformed, and GitHub strips the trailing newline from
+          # multi-line secrets.
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          printf '%s\n' "$DEPLOY_HOST_KEY" > "$KNOWN_HOSTS"
+          chmod 600 "$KNOWN_HOSTS"
+
+          echo "Asking $TIER/$SERVICE to re-pull on the home box..."
+          ssh \
+            -i "$KEY_FILE" \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$KNOWN_HOSTS" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            "$DEPLOY_HOST" "deploy $TIER/$SERVICE"
+
+      # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
+      # outlives the job, and this runner is a machine in a house, not an
+      # ephemeral VM that disappears at the end of the run.
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/homelab_deploy_key" "$RUNNER_TEMP/homelab_known_hosts"
+
+      # ── Smoke test ─────────────────────────────────────────────────────────
+      # THE BODY IS CHECKED, NOT JUST THE STATUS CODE. After a silent rollback,
+      # a no-op pull (the moving tag resolved to the digest already running) or a
+      # compose `up -d` that decided nothing had changed, the OLD revision keeps
+      # answering 200 — identically, cheerfully, and for as long as you care to
+      # poll it. A 200 therefore proves the box is up, not that the deploy did
+      # anything. Matching the version string in the body is what proves the
+      # revision that just built is the one now serving.
+      - name: Smoke test
+        id: smoke
+        env:
+          PUBLIC_HOST: ${{ inputs.public_host }}
+          SMOKE_PATH: ${{ inputs.smoke_path }}
+          VERSION: ${{ inputs.version }}
+          RETRIES: ${{ inputs.smoke_retries }}
+          INTERVAL: ${{ inputs.smoke_interval }}
+        run: |
+          set -uo pipefail
+          # The runner is a long-lived machine in a house, not an ephemeral VM,
+          # so nothing this step writes is allowed to outlive it.
+          trap 'rm -f "$RUNNER_TEMP/smoke_body"' EXIT
+          URL="https://$PUBLIC_HOST$SMOKE_PATH"
+          echo "Polling $URL for version '$VERSION' — up to $RETRIES attempts, ${INTERVAL}s apart."
+          body=""
+          i=1
+          while [ "$i" -le "$RETRIES" ]; do
+            # `|| true`, not `|| echo 000`: curl writes %{http_code} (as 000) even
+            # when the transfer fails, so an appended fallback would produce
+            # "000000" and make the log lie about what happened.
+            code=$(curl -sS -o "$RUNNER_TEMP/smoke_body" -w '%{http_code}' --max-time 10 "$URL" || true)
+            code="${code:-000}"
+            body=$(head -c 400 "$RUNNER_TEMP/smoke_body" 2>/dev/null || true)
+            if [ "$code" = "200" ] && printf '%s' "$body" | grep -qF -- "$VERSION"; then
+              echo "attempt $i → HTTP $code, body reports $VERSION."
+              echo "status=serving $VERSION" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $i → HTTP $code, no '$VERSION' in the body yet."
+            i=$((i + 1))
+            [ "$i" -le "$RETRIES" ] && sleep "$INTERVAL"
+          done
+          echo "::error::$URL never reported version $VERSION after $RETRIES attempts. Last body (400 bytes): $body"
+          echo "::error::A steady 200 without the version means the OLD revision is still serving — the pull was a no-op, or the container did not restart."
+          echo "status=never reported $VERSION" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      # ── Release surface ────────────────────────────────────────────────────
+      # Reached only when the deploy and the smoke test both passed, so the tag
+      # always names something that actually served traffic.
+      - name: Checkout (for the release tag)
+        if: inputs.release_tag != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push release tag
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+          SERVICE: ${{ inputs.service }}
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -uo pipefail
+          # An existing tag is INFORMATIONAL, never a failure. By the time this
+          # step runs the smoke test is green: the deploy succeeded. If a
+          # concurrent run took the number first, that is a bookkeeping race, and
+          # failing the job here would report a healthy UAT as a broken deploy.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::warning::$TAG already exists — leaving it alone. The deploy is green regardless."
+            exit 0
+          fi
+          # actions/checkout sets no git identity; annotated tags need one.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$SERVICE $TAG — automated $TIER deploy (${GITHUB_SHA::7})"
+          # --no-verify: several repos have a husky pre-push hook that runs the
+          # test suite, which would block a tag push for reasons unrelated to it.
+          if git push --no-verify origin "$TAG"; then
+            echo "Tagged $TAG"
+          else
+            echo "::warning::Could not push $TAG — most likely another run pushed it between the check and the push. The deploy is green regardless."
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          SERVICE: ${{ inputs.service }}
+          TIER: ${{ inputs.tier }}
+          VERSION: ${{ inputs.version }}
+          PUBLIC_HOST: ${{ inputs.public_host }}
+          SMOKE_PATH: ${{ inputs.smoke_path }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          SMOKE_STATUS: ${{ steps.smoke.outputs.status }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          {
+            echo "### Homelab deploy — \`$SERVICE\` (\`$TIER\`)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| service | \`$SERVICE\` |"
+            echo "| tier | \`$TIER\` |"
+            echo "| version | \`$VERSION\` |"
+            echo "| host | https://$PUBLIC_HOST$SMOKE_PATH |"
+            echo "| smoke | \`${SMOKE_OUTCOME:-skipped}\` — ${SMOKE_STATUS:-not run} |"
+            echo "| release tag | \`${TAG:-none}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
