@@ -133,6 +133,13 @@ on:
           `100.x.y.z ssh-ed25519 AAAA...`. Pinned rather than trusted on first
           use — see the deploy step.
         required: true
+      AWS_ROLE_ARN:
+        description: >
+          Role assumed to mint a registry password for the box. See the ECR
+          login step: the box holds NO standing registry credential, so the
+          password is minted per run and handed over on the ssh channel's
+          stdin. The calling job therefore needs `permissions: id-token: write`.
+        required: true
 
 jobs:
   deploy:
@@ -198,6 +205,42 @@ jobs:
             exit 1
           fi
 
+      # ── Mint a registry password for the box ───────────────────────────────
+      # THE BOX HOLDS NO REGISTRY CREDENTIAL, AND THAT IS THE POINT. Giving it a
+      # standing one would mean an unattended machine in a house keeping a key to
+      # the company registry on disk, surviving every reimage of everything around
+      # it and readable by anything that ever gets a shell there. Instead the
+      # password is minted here, lives for twelve hours, and is handed over on the
+      # ssh channel — see the deploy step for how, and why not as an argument.
+      #
+      # This is a separate job from the caller's build, so it assumes the role
+      # again rather than inheriting anything; that is also why the CALLING JOB
+      # must grant `permissions: id-token: write`.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: homelab-deploy-${{ inputs.service }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Mint a short-lived ECR password
+        id: ecr
+        env:
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          PW=$(aws ecr get-login-password --region "$REGION")
+          if [ -z "$PW" ]; then
+            echo "::error::aws ecr get-login-password returned nothing"; exit 1
+          fi
+          echo "::add-mask::$PW"
+          # To a file in RUNNER_TEMP rather than a step output: a step output is
+          # written to the workflow's own state and survives the job, and this is
+          # a live registry credential. The file is removed unconditionally below,
+          # on the same runner it was written to.
+          umask 077
+          printf '%s' "$PW" > "$RUNNER_TEMP/homelab_ecr_pw"
+
       # ── Ask the box to re-pull one service ─────────────────────────────────
       # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
       # whatever is sent arrives as $SSH_ORIGINAL_COMMAND and its exact bytes are
@@ -212,6 +255,14 @@ jobs:
       # than on the open internet, but we hold the real fingerprint, so there is
       # no reason to accept anything else. IdentitiesOnly stops ssh offering any
       # other key the runner happens to have and getting itself rate-limited.
+      #
+      # THE REGISTRY PASSWORD GOES IN ON STDIN, NOT AS AN ARGUMENT. An argument
+      # would land in `SSH_ORIGINAL_COMMAND`, which the far side echoes back into
+      # the deploy log on a malformed command, and would be visible in `ps` on the
+      # box for the life of the call. stdin crosses the same encrypted channel,
+      # is never written to disk there, and passes straight through a forced
+      # command — `restrict` disables port, agent and X11 forwarding and the pty,
+      # none of which is stdin.
       #
       # The remote script's stdout IS the deploy log — `docker compose pull` and
       # `up -d` output — and its exit code IS the deploy's exit code, so neither
@@ -248,12 +299,13 @@ jobs:
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o ServerAliveInterval=30 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $TIER/$SERVICE"
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $TIER/$SERVICE" \
+            < "$RUNNER_TEMP/homelab_ecr_pw"
 
       # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
       # outlives the job, and this runner is a machine in a house, not an
       # ephemeral VM that disappears at the end of the run.
-      - name: Remove the deploy key
+      - name: Remove the deploy key and the registry password
         if: always()
         run: rm -f "$RUNNER_TEMP/homelab_deploy_key" "$RUNNER_TEMP/homelab_known_hosts"
 
