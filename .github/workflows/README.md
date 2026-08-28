@@ -11,7 +11,9 @@ every time.
 | Path | What it is |
 |---|---|
 | `.github/workflows/ecs-deploy.yml` | Reusable workflow — task definition, Traefik labels, secrets, rollout, rollback, release tag |
+| `.github/workflows/homelab-deploy.yml` | Reusable workflow — the home tier on `uplift-server-01`: branch gate, ssh deploy call, smoke test, release tag |
 | `.github/actions/ecr-build-push/` | Composite action — ECR login, image tag, native build, push |
+| `.github/actions/ecr-build-push-home/` | Composite action — the home-tier build: OIDC credentials, `linux/amd64`, `uat-<sha>` + `:uat`, local buildx cache |
 | `.github/actions/uplift-version-bump/` | Composite action — next `vX.Y.Z` from git tags (the upliftcontrolversion convention) |
 
 ## Division of labour
@@ -85,6 +87,138 @@ jobs:
 > **Pin `@v1`, never `@main`.** A bug in a workflow referenced by `@main` breaks
 > every repo's deploy at once. Tags are moved deliberately, after a pilot repo
 > has deployed successfully.
+
+## The home tier: `homelab-deploy.yml`
+
+`ecs-deploy.yml` deploys to ECS. `homelab-deploy.yml` deploys the UAT and dev
+tiers that run on `uplift-server-01`, a home x86_64 box that also hosts a
+self-hosted runner (`[self-hosted, uplift-server-01]`).
+
+**Reach for it instead of `ecs-deploy.yml` whenever the target is that box.** The
+two are not variants of each other and share no code, because on the home box CI
+is deliberately powerless. The runner user (`ghrunner`) drives its own *rootless*
+dockerd — a different image store from the system docker that runs the services —
+is not in group `docker`, and is firewalled off from loopback, the LAN and the
+docker bridges. It cannot see a running container, never mind restart one. There
+is no task definition to register, nothing to roll back to, and no AWS API to
+call.
+
+The one channel from CI to the running services is ssh to the box's tailscale
+address, landing on a restricted user whose key pins a **forced command**. That
+command runs a root-owned script which validates its input and does, for exactly
+one service:
+
+```
+docker compose -f /srv/stacks/<tier>/<service>.yml pull && up -d
+```
+
+The compose files are owned by a GitOps agent reconciling them from the `infra`
+repo. **CI cannot edit them, and that is the point** — a compromised or careless
+workflow cannot rewrite what the box runs, only ask it to re-pull a service it
+already knows about. Because CI cannot edit the compose file, the compose file
+pins the moving `:uat` tag and the box pulls it; **no image reference is ever
+sent to the box**. Do not add one.
+
+### Division of labour
+
+```
+caller repo   →  language setup, gates, build + push to the HOME-TIER ECR repo
+this workflow →  branch gate, ssh deploy call, smoke test, release tag
+```
+
+### Usage
+
+```yaml
+name: Deploy UAT
+on:
+  push: { branches: [uat] }
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-<service>-uat
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, uplift-server-01]
+    permissions:
+      contents: read
+      packages: read
+      id-token: write          # required — the home runner has no AWS identity
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag:     ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      # ... repo-specific gates: install, typecheck, tests ...
+
+      - id: ver
+        uses: uplift-technology-company-limited/.github/.github/actions/uplift-version-bump@v1
+
+      - uses: uplift-technology-company-limited/.github/.github/actions/ecr-build-push-home@v1
+        with:
+          ecr_repo:     <service>-uat          # NEVER a production repository
+          aws_region:   ${{ vars.AWS_REGION }}
+          aws_role_arn: ${{ vars.HOME_DEPLOY_ROLE_ARN }}
+          cache_dir:    /var/lib/ghrunner-cache/<service>
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    needs: build
+    permissions:
+      contents: write        # required to push the release tag
+    uses: uplift-technology-company-limited/.github/.github/workflows/homelab-deploy.yml@v1
+    with:
+      service:     <service>
+      tier:        uat
+      public_host: <service>-uat.uplifttech.dev
+      version:     ${{ needs.build.outputs.version }}
+      release_tag: ${{ needs.build.outputs.tag }}
+    secrets: inherit
+```
+
+The workflow needs three secrets — `DEPLOY_HOST` (the tailscale address, as
+`user@host`, since the runner user is not the deploy user), `DEPLOY_SSH_KEY` and
+`DEPLOY_HOST_KEY` (the box's public host key as a `known_hosts` line). They are
+declared explicitly in the workflow rather than left to `inherit` alone, so the
+contract is readable from the file.
+
+> **Pin `@v1`, never `@main`** — the same rule as everywhere else in this repo.
+
+### Things the home tier gets right that are easy to get wrong
+
+- **The build pushes to a SEPARATE ECR repository under a `uat-` tag prefix.**
+  `ecr-build-push` tags `:<short-sha>` and `:latest`; production builds arm64
+  from `main` and the home tier builds amd64 from `uat`, so pointed at one
+  repository the same commit's two architectures overwrite each other's `:<sha>`
+  and contest `:latest` outright. That hands production an amd64 image that will
+  not start on Graviton. Hence a second action and a second repository, not new
+  inputs on the existing one.
+- **The home runner has no AWS identity.** No instance profile, no metadata
+  endpoint. `ecr-build-push-home` assumes a role through OIDC, so the calling job
+  must grant `id-token: write`.
+- **The buildx cache is `type=local` on NVMe, not `type=gha`.** The GHA cache
+  backend is a download and (with `mode=max`) a full re-upload of every layer
+  over a domestic ISP — the upload leg alone spends the entire reason for
+  building on a 12-thread machine.
+- **`tier` is validated against an allowlist of exactly `uat` and `dev`.** It is
+  interpolated into the command sent over ssh; the far side validates too, but a
+  workflow that can send arbitrary strings down a deploy channel is one typo from
+  being an injection primitive.
+- **Plain `ssh`, not `appleboy/ssh-action`.** The far side is a forced command,
+  so the payload arrives as `$SSH_ORIGINAL_COMMAND` and its exact bytes are
+  matched by a regex. An action that wraps the command in its own shell preamble
+  sends something that regex rejects, and it fails looking like an auth problem.
+- **The host key is pinned; `StrictHostKeyChecking=no` is never used.** A deploy
+  channel that accepts any host key accepts a machine-in-the-middle, and we hold
+  the real fingerprint.
+- **The smoke test matches the version string in the body, not just a 200.**
+  After a silent rollback or a no-op pull the old revision answers 200
+  identically, for as long as you care to poll it. Matching the version is what
+  proves the revision that just built is the one serving.
 
 ## Configuration lives in org variables, not in this repo
 
