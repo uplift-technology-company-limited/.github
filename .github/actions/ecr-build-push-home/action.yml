@@ -1,0 +1,245 @@
+name: ECR build and push (home tier)
+description: >
+  Build a linux/amd64 image on the uplift-server-01 home runner and push it to a
+  HOME-TIER ECR repository under a prefixed tag namespace (uat-<sha> plus the
+  moving :uat pointer). Emits the immutable URI for the record; the box's compose
+  file pins :uat and homelab-deploy asks the box to re-pull it.
+
+# WHY THIS IS A SEPARATE ACTION AND NOT NEW INPUTS ON ecr-build-push
+#
+#   1. THE TAG NAMESPACES COLLIDE. `ecr-build-push` tags `:<short-sha>` and
+#      `:latest`. Production builds linux/arm64 from `main` on the in-VPC
+#      Graviton runner; the home tier builds linux/amd64 from `uat` on a home
+#      x86_64 box. Pointed at the same ECR repository those two tag namespaces
+#      overwrite each other: the SAME COMMIT built for both architectures
+#      produces the same `:<short-sha>`, so whichever pushed last wins, and
+#      `:latest` is contested outright. The failure that buys is a production
+#      task handed an amd64 image that simply will not start on Graviton —
+#      an `exec format error` in a task that never reaches its health check,
+#      caused by a UAT build nobody was watching. This action therefore pushes
+#      into a SEPARATE ECR repository and prefixes every tag with `uat-`.
+#      NEVER point `ecr_repo` at a production ECR repository.
+#
+#   2. THE HOME RUNNER HAS NO AWS IDENTITY. `ecr-build-push` runs on an EC2
+#      instance inside the VPC and relies on the instance role being ambient in
+#      the environment. uplift-server-01 sits in a living room behind a home ISP:
+#      there is no instance profile, no metadata endpoint, nothing to fall back
+#      on. So this action assumes a role through GitHub OIDC before it does
+#      anything else, which means THE CALLING JOB MUST GRANT
+#      `permissions: { id-token: write }` — without it the token request fails
+#      with a bare 400 that reads like an AWS trust-policy problem and is not.
+#
+#   3. IT MUST NOT DESTABILISE PRODUCTION. `ecr-build-push` is on the critical
+#      path of every prod deploy in the org. Adding a platform/tag/credentials
+#      matrix to it to serve one home box would put UAT-shaped bugs in front of
+#      every production rollout. The duplication here is deliberate and cheap.
+#
+# The image reference is never sent to the box. The compose files under
+# /srv/stacks/<tier>/ are owned by a GitOps agent pulling from the `infra` repo
+# and CI cannot edit them — that is the point of the design — so they pin the
+# MOVING `:uat` tag and the box re-pulls it. `uat-<short-sha>` exists so that
+# months later `docker inspect` on the running container answers "which commit
+# is this?" without anyone having to trust a moving pointer's history.
+#
+# NO IDENTIFIERS ARE HARDCODED HERE. This repo is public; region, account and
+# role ARN all arrive as inputs the caller fills from org-level `vars.*`.
+
+inputs:
+  ecr_repo:
+    description: >
+      HOME-TIER ECR repository name, e.g. `sawathr-frontend-uat`. This must be a
+      repository dedicated to the home tier — see reason 1 in the header. Pointing
+      it at a production repository will corrupt the production tag namespace.
+    required: true
+  aws_region:
+    description: >
+      Target region. Composite actions CANNOT read the `vars` context — that is a
+      workflow-only capability — so the CALLER must pass vars.AWS_REGION through
+      this input explicitly.
+    required: true
+  aws_role_arn:
+    description: >
+      IAM role to assume via GitHub OIDC. Required, unlike in `ecr-build-push`:
+      the home runner is not in AWS, holds no instance role, and has no ambient
+      credentials of any kind. The role needs ecr:GetAuthorizationToken plus
+      push rights on the home-tier repository, and its trust policy must accept
+      token.actions.githubusercontent.com for the calling repository.
+    required: true
+  aws_account_id:
+    description: >
+      Registry account. Leave empty to derive it from `sts get-caller-identity`,
+      which is always correct for whatever credentials the runner actually holds
+      and cannot drift out of sync with a variable.
+    required: false
+    default: ""
+  dockerfile:
+    description: "Path to the Dockerfile."
+    required: false
+    default: "Dockerfile"
+  context:
+    description: "Build context."
+    required: false
+    default: "."
+  build_args:
+    description: "Newline-separated KEY=VALUE build args."
+    required: false
+    default: ""
+  github_token_secret:
+    description: >
+      When 'true', mounts $GITHUB_TOKEN as a BuildKit secret named `github_token`.
+      Required by every Dockerfile that installs @uplift-technology-company-limited/*
+      packages from GitHub Packages. The token is mounted, never baked into a layer.
+    required: false
+    default: "false"
+  cache_dir:
+    description: >
+      Absolute path on the runner for a buildx `type=local` layer cache. Empty
+      disables caching entirely.
+
+      WHY LOCAL AND NOT `type=gha`. The GHA cache backend lives inside GitHub's
+      network, and from this box every cache read is a download over a domestic
+      ISP and every cache write an upload over the same link — `mode=max` re-uploads
+      every intermediate layer at the end of the build, so the upload leg alone
+      can outlast the compile it was meant to save. That spends the entire reason
+      for building on a 12-thread machine on someone's home uplink. A local cache
+      on NVMe removes both legs; the disk is already paid for and the runner is
+      the only consumer. Measured on `sampon-frontend`: 348s with the local cache
+      against a ~260s median on hosted runners before the change — close enough
+      that the win is the freed hosted-runner minutes and the missing egress, not
+      raw wall clock.
+
+      The cache is rotated through `<cache_dir>.new` after each build because
+      buildx's local exporter appends and never prunes; without the rotation the
+      directory grows without bound until the box runs out of disk mid-build.
+    required: false
+    default: ""
+
+outputs:
+  image:
+    description: "Full image URI including the IMMUTABLE uat-<sha> tag."
+    value: ${{ steps.build.outputs.image }}
+  tag:
+    description: "The immutable tag, e.g. uat-1a2b3c4."
+    value: ${{ steps.build.outputs.tag }}
+  revision:
+    description: "Full commit SHA baked into org.opencontainers.image.revision."
+    value: ${{ steps.build.outputs.revision }}
+
+runs:
+  using: composite
+  steps:
+    # OIDC first: nothing below this line can talk to AWS until it succeeds.
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+        role-session-name: ecr-build-push-home
+
+    # Resolved once and exported, because the steps below both need them and a
+    # composite action has no `vars` context of its own to fall back on.
+    - name: Resolve registry
+      shell: bash
+      env:
+        IN_REGION: ${{ inputs.aws_region }}
+        IN_ACCOUNT: ${{ inputs.aws_account_id }}
+      run: |
+        set -euo pipefail
+        REGION="$IN_REGION"
+        if [ -z "$REGION" ]; then
+          echo "::error::aws_region is required — a composite action has no vars context of its own, so the caller must pass vars.AWS_REGION."
+          exit 1
+        fi
+        ACCOUNT="$IN_ACCOUNT"
+        if [ -z "$ACCOUNT" ]; then
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text --region "$REGION")
+        fi
+        {
+          echo "ECR_REGION=$REGION"
+          echo "ECR_ACCOUNT=$ACCOUNT"
+          echo "ECR_REGISTRY=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+        } >> "$GITHUB_ENV"
+        echo "Registry: $ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+
+    - name: Log in to Amazon ECR
+      shell: bash
+      run: |
+        set -euo pipefail
+        aws ecr get-login-password --region "$ECR_REGION" \
+          | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+    # buildx, not plain `docker build`: the local cache exporter and --push in a
+    # single invocation are buildx features. The runner user drives its OWN
+    # rootless dockerd here, which is a different image store from the system
+    # docker that runs the services — so the build never leaves anything behind
+    # that the running stack could accidentally pick up.
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push
+      id: build
+      shell: bash
+      env:
+        ECR_REPO: ${{ inputs.ecr_repo }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        BUILD_CONTEXT: ${{ inputs.context }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+        USE_GH_SECRET: ${{ inputs.github_token_secret }}
+        CACHE_DIR: ${{ inputs.cache_dir }}
+      run: |
+        set -euo pipefail
+        SHA_SHORT=$(git rev-parse --short HEAD)
+        SHA_FULL=$(git rev-parse HEAD)
+        REG="$ECR_REGISTRY"
+
+        # `uat-` prefixes the immutable tag so that even if someone mistakenly
+        # points this at a production repository the collision is visible in the
+        # tag list rather than silently overwriting a Graviton image.
+        IMMUTABLE="$REG/$ECR_REPO:uat-$SHA_SHORT"
+        MOVING="$REG/$ECR_REPO:uat"
+
+        args=(buildx build
+          --platform linux/amd64
+          -f "$DOCKERFILE"
+          -t "$IMMUTABLE"
+          -t "$MOVING"
+          --label "org.opencontainers.image.revision=$SHA_FULL"
+          --label "org.opencontainers.image.version=uat-$SHA_SHORT"
+          --label "org.opencontainers.image.source=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}"
+          --push)
+
+        if [ "$USE_GH_SECRET" = "true" ]; then
+          args+=(--secret id=github_token,env=GITHUB_TOKEN)
+        fi
+
+        # A first run has no cache to import; passing a non-existent src makes
+        # buildx noisy for no reason, so it is only added once the directory has
+        # something in it.
+        if [ -n "$CACHE_DIR" ]; then
+          mkdir -p "$CACHE_DIR"
+          if [ -n "$(ls -A "$CACHE_DIR" 2>/dev/null || true)" ]; then
+            args+=(--cache-from "type=local,src=$CACHE_DIR")
+          fi
+          args+=(--cache-to "type=local,dest=$CACHE_DIR.new,mode=max")
+        fi
+
+        while IFS= read -r ba; do
+          [ -n "$ba" ] && args+=(--build-arg "$ba")
+        done <<< "$BUILD_ARGS"
+
+        args+=("$BUILD_CONTEXT")
+
+        DOCKER_BUILDKIT=1 docker "${args[@]}"
+
+        # Rotate rather than append — see the cache_dir description.
+        if [ -n "$CACHE_DIR" ] && [ -d "$CACHE_DIR.new" ]; then
+          rm -rf "$CACHE_DIR"
+          mv "$CACHE_DIR.new" "$CACHE_DIR"
+        fi
+
+        {
+          echo "image=$IMMUTABLE"
+          echo "tag=uat-$SHA_SHORT"
+          echo "revision=$SHA_FULL"
+        } >> "$GITHUB_OUTPUT"
+        echo "Pushed $IMMUTABLE and $MOVING (linux/amd64, revision $SHA_FULL)"
