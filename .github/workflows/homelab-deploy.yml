@@ -103,16 +103,26 @@ on:
         required: false
         type: string
         default: "uat"
+      deploy_user:
+        description: >
+          Unix account the forced command hangs off. It is deliberately NOT the
+          runner's own user: `ghrunner` runs the build, and if ssh were allowed
+          to default to it the connection would be refused with
+          "Permission denied (publickey)" — a message that reads like a broken
+          key rather than a missing username, which is exactly the kind of hour
+          this input exists to save. Passed separately from DEPLOY_HOST so the
+          host form here still matches the host field of DEPLOY_HOST_KEY.
+        required: false
+        type: string
+        default: "uplift-deploy"
 
     secrets:
       DEPLOY_HOST:
         description: >
-          The box's tailscale address. Include the restricted deploy user
-          (`deployer@100.x.y.z`) unless the runner's ~/.ssh/config already pins
-          it — the runner user is `ghrunner`, which is NOT the account the forced
-          command hangs off, and ssh would otherwise default to it and be
-          refused. Whatever host form is used here must match the host field of
-          DEPLOY_HOST_KEY.
+          The box's tailscale address, host only — the account comes from the
+          `deploy_user` input. This value must match the host field of
+          DEPLOY_HOST_KEY, or ssh looks the pin up under a name that is not in
+          the file and refuses the connection.
         required: true
       DEPLOY_SSH_KEY:
         description: "Private key for the restricted deploy user, whose authorized_keys entry pins the forced command."
@@ -130,12 +140,17 @@ jobs:
     runs-on: ["self-hosted", "uplift-server-01"]
     timeout-minutes: 30
 
-    # Needed to push the release tag. Declared here so the contract is readable
-    # rather than implied; a reusable workflow cannot widen the token beyond
-    # what its caller holds, so THE CALLING JOB MUST ALSO GRANT
-    # `permissions: { contents: write }` or this job will not start.
-    permissions:
-      contents: write
+    # No `permissions:` block, deliberately, and for the same reason
+    # `ecs-deploy.yml` has none: a called workflow's token can never be wider
+    # than its caller's, so declaring `contents: write` here would not grant it
+    # — it would only make the job REFUSE TO START for any caller that forgot
+    # the same line, including callers that pass an empty `release_tag` and were
+    # never going to push a tag at all. The requirement belongs in the
+    # `release_tag` description, where the caller reads it, not in a gate that
+    # fires before anything has run.
+    #
+    # Callers that pass a non-empty `release_tag` MUST set
+    # `permissions: { contents: write }` on the job that calls this workflow.
 
     steps:
       # ── Preconditions ──────────────────────────────────────────────────────
@@ -205,6 +220,7 @@ jobs:
         id: deploy
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ inputs.deploy_user }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
           TIER: ${{ inputs.tier }}
@@ -232,7 +248,7 @@ jobs:
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o ServerAliveInterval=30 \
-            "$DEPLOY_HOST" "deploy $TIER/$SERVICE"
+            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $TIER/$SERVICE"
 
       # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
       # outlives the job, and this runner is a machine in a house, not an
