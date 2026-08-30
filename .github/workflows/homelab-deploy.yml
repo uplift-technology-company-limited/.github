@@ -96,6 +96,27 @@ on:
         required: false
         type: number
         default: 15
+      migrate:
+        description: >
+          Ask the box to run this service's migration BEFORE the new container
+          comes up — the same ordering the ECS workflow uses. Sent as the literal
+          word `migrate` on the forced-command channel; WHAT that means is the
+          `uplift.migrate` label on the service in its compose file, which lives
+          in the `infra` repo under GitOps and which this workflow cannot edit.
+          CI chooses whether, never what. A service whose compose file carries no
+          such label fails the deploy rather than silently skipping.
+        required: false
+        type: boolean
+        default: false
+      seed:
+        description: >
+          Ask the box to run this service's seed AFTER the new container is
+          healthy. Same contract as `migrate`, via the `uplift.seed` label. Off
+          by default and meant for workflow_dispatch: a seed that resets demo
+          data is not something a push should do on its own.
+        required: false
+        type: boolean
+        default: false
       deploy_branch:
         description: >
           Branch this tier ships from. UAT ships from `uat`, production from
@@ -276,6 +297,8 @@ jobs:
           DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
           TIER: ${{ inputs.tier }}
           SERVICE: ${{ inputs.service }}
+          MIGRATE: ${{ inputs.migrate }}
+          SEED: ${{ inputs.seed }}
         run: |
           set -euo pipefail
           umask 077
@@ -290,7 +313,13 @@ jobs:
           printf '%s\n' "$DEPLOY_HOST_KEY" > "$KNOWN_HOSTS"
           chmod 600 "$KNOWN_HOSTS"
 
-          echo "Asking $TIER/$SERVICE to re-pull on the home box..."
+          # The flags are fixed words appended in a fixed order — the far side's
+          # regex accepts exactly `deploy <tier>/<service>[ migrate][ seed]` and
+          # nothing else, so there is nothing here for a caller to shape.
+          CMD="deploy $TIER/$SERVICE"
+          if [ "$MIGRATE" = "true" ]; then CMD="$CMD migrate"; fi
+          if [ "$SEED" = "true" ]; then CMD="$CMD seed"; fi
+          echo "Asking the home box: $CMD"
           ssh \
             -i "$KEY_FILE" \
             -o IdentitiesOnly=yes \
@@ -299,7 +328,7 @@ jobs:
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o ServerAliveInterval=30 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "deploy $TIER/$SERVICE" \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$CMD" \
             < "$RUNNER_TEMP/homelab_ecr_pw"
 
       # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
