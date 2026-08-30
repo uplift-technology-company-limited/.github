@@ -65,6 +65,19 @@ on:
         required: false
         type: string
         default: ""
+      public_host_aliases:
+        description: >
+          Comma-separated EXTRA public hostnames served by the same router, e.g.
+          "ai.samoe.co". They are OR-ed onto the public rule rather than given
+          their own router, so one hostname cannot drift onto a different task
+          revision than the other. `public_host` stays the canonical name — it
+          is what the smoke test polls. Ignored when `public_host` is empty.
+          Each alias needs its own DNS record pointing at the same edge, and the
+          edge's TLS must already cover it (the origin certificate has a fixed
+          SAN list; a zone on Full-strict will 526 for a name outside it).
+        required: false
+        type: string
+        default: ""
       internal_host:
         description: "Internal mesh hostname. Defaults to <service>.<vars.INTERNAL_DOMAIN>. Set to '-' to emit no internal router."
         required: false
@@ -421,6 +434,7 @@ jobs:
         env:
           SERVICE: ${{ steps.resolve.outputs.router }}
           PUBLIC_HOST: ${{ inputs.public_host }}
+          PUBLIC_HOST_ALIASES: ${{ inputs.public_host_aliases }}
           INTERNAL_HOST: ${{ steps.resolve.outputs.internal_host }}
           PORT: ${{ inputs.container_port }}
           HEALTH_PATH: ${{ inputs.health_path }}
@@ -431,14 +445,21 @@ jobs:
           # labels are built with jq and not a shell heredoc.
           jq -n \
             --arg svc "$SERVICE" --arg pub "$PUBLIC_HOST" --arg int "$INTERNAL_HOST" \
+            --arg aliases "$PUBLIC_HOST_ALIASES" \
             --arg port "$PORT" --arg hp "$HEALTH_PATH" --arg hc "$WITH_HC" '
             def hcpair($name): if $hc == "true"
               then { ("traefik.http.services.\($name).loadbalancer.healthcheck.path"): $hp }
               else {} end;
 
+            # One rule OR-ing every public hostname, so all of them always resolve
+            # to the same router — and therefore the same task revision.
+            def publicrule: [ $pub ]
+              + ( $aliases | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")) )
+              | map("Host(`\(.)`)") | join(" || ");
+
             { "traefik.enable": "true" }
             + ( if $pub != "" then {
-                  ("traefik.http.routers.\($svc).rule"): "Host(`\($pub)`)",
+                  ("traefik.http.routers.\($svc).rule"): publicrule,
                   ("traefik.http.routers.\($svc).entrypoints"): "websecure",
                   ("traefik.http.routers.\($svc).tls"): "true",
                   ("traefik.http.routers.\($svc).service"): $svc,

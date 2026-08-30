@@ -79,6 +79,7 @@ jobs:
       image:          ${{ needs.build.outputs.image }}
       container_port: <port>
       public_host:    <host>.uplifttech.co   # omit entirely for internal-only
+      # public_host_aliases: other.example.co   # extra hostnames OR-ed onto the SAME router
       version:        ${{ needs.build.outputs.version }}
       release_tag:    ${{ needs.build.outputs.tag }}
     secrets: inherit
