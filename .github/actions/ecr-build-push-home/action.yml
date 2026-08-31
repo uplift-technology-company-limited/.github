@@ -37,9 +37,14 @@ description: >
 # The image reference is never sent to the box. The compose files under
 # /srv/stacks/<tier>/ are owned by a GitOps agent pulling from the `infra` repo
 # and CI cannot edit them — that is the point of the design — so they pin the
-# MOVING `:uat` tag and the box re-pulls it. `uat-<short-sha>` exists so that
-# months later `docker inspect` on the running container answers "which commit
-# is this?" without anyone having to trust a moving pointer's history.
+# MOVING `:<tier>` tag and the box re-pulls it. `<tier>-<short-sha>` exists so
+# that months later `docker inspect` on the running container answers "which
+# commit is this?" without anyone having to trust a moving pointer's history.
+#
+# THE TAG NAMESPACE IS PER-TIER, NOT LITERALLY `uat`. The home box grew a third
+# tier (`prod`) on 2026-08-31 to receive SamoeERP off the full ECS box, and its
+# compose files pin `:prod` per that tier's rules. `tier` defaults to `uat` so
+# every existing caller keeps the exact tag namespace it already publishes.
 #
 # NO IDENTIFIERS ARE HARDCODED HERE. This repo is public; region, account and
 # role ARN all arrive as inputs the caller fills from org-level `vars.*`.
@@ -47,10 +52,24 @@ description: >
 inputs:
   ecr_repo:
     description: >
-      HOME-TIER ECR repository name, e.g. `sawathr-frontend-uat`. This must be a
-      repository dedicated to the home tier — see reason 1 in the header. Pointing
-      it at a production repository will corrupt the production tag namespace.
+      HOME-TIER ECR repository name, e.g. `sawathr-frontend-uat` or `samoe-prod`.
+      This must be a repository dedicated to the home tier — see reason 1 in the
+      header. Pointing it at the ECS tier's repository will corrupt that tag
+      namespace: this action builds linux/amd64, the ECS one builds arm64.
     required: true
+  tier:
+    description: >
+      Tag namespace for the home tier this image serves: `uat`, `dev` or `prod`.
+      Produces the moving `:<tier>` pointer plus the immutable `<tier>-<sha>`,
+      and MUST match what the compose file under /srv/stacks/<tier>/ pins —
+      a mismatch means the box re-pulls a tag this build never wrote and keeps
+      running the old image silently, which is the failure this whole tag scheme
+      exists to make impossible.
+
+      Defaults to `uat`, so existing callers publish exactly the tags they
+      always have.
+    required: false
+    default: "uat"
   aws_region:
     description: >
       Target region. Composite actions CANNOT read the `vars` context — that is a
@@ -116,10 +135,10 @@ inputs:
 
 outputs:
   image:
-    description: "Full image URI including the IMMUTABLE uat-<sha> tag."
+    description: "Full image URI including the IMMUTABLE <tier>-<sha> tag."
     value: ${{ steps.build.outputs.image }}
   tag:
-    description: "The immutable tag, e.g. uat-1a2b3c4."
+    description: "The immutable tag, e.g. uat-1a2b3c4 or prod-1a2b3c4."
     value: ${{ steps.build.outputs.tag }}
   revision:
     description: "Full commit SHA baked into org.opencontainers.image.revision."
@@ -184,6 +203,7 @@ runs:
         DOCKERFILE: ${{ inputs.dockerfile }}
         BUILD_CONTEXT: ${{ inputs.context }}
         BUILD_ARGS: ${{ inputs.build_args }}
+        TIER: ${{ inputs.tier }}
         USE_GH_SECRET: ${{ inputs.github_token_secret }}
         CACHE_DIR: ${{ inputs.cache_dir }}
       run: |
@@ -192,11 +212,23 @@ runs:
         SHA_FULL=$(git rev-parse HEAD)
         REG="$ECR_REGISTRY"
 
-        # `uat-` prefixes the immutable tag so that even if someone mistakenly
-        # points this at a production repository the collision is visible in the
-        # tag list rather than silently overwriting a Graviton image.
-        IMMUTABLE="$REG/$ECR_REPO:uat-$SHA_SHORT"
-        MOVING="$REG/$ECR_REPO:uat"
+        # Allowlist, not a pattern match — this string becomes a tag that a
+        # production box pulls by name. An unknown value would publish a tag
+        # nothing pins, and the box would keep serving the previous image with
+        # a green deploy to show for it.
+        case "$TIER" in
+          uat|dev|prod) : ;;
+          *)
+            echo "::error::tier must be exactly 'uat', 'dev' or 'prod' (got '$TIER')."
+            exit 1
+            ;;
+        esac
+
+        # The tier prefixes the immutable tag so that even if someone mistakenly
+        # points this at the ECS tier's repository the collision is visible in
+        # the tag list rather than silently overwriting a Graviton image.
+        IMMUTABLE="$REG/$ECR_REPO:$TIER-$SHA_SHORT"
+        MOVING="$REG/$ECR_REPO:$TIER"
 
         args=(buildx build
           --platform linux/amd64
@@ -204,7 +236,7 @@ runs:
           -t "$IMMUTABLE"
           -t "$MOVING"
           --label "org.opencontainers.image.revision=$SHA_FULL"
-          --label "org.opencontainers.image.version=uat-$SHA_SHORT"
+          --label "org.opencontainers.image.version=$TIER-$SHA_SHORT"
           --label "org.opencontainers.image.source=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}"
           --push)
 
@@ -239,7 +271,7 @@ runs:
 
         {
           echo "image=$IMMUTABLE"
-          echo "tag=uat-$SHA_SHORT"
+          echo "tag=$TIER-$SHA_SHORT"
           echo "revision=$SHA_FULL"
         } >> "$GITHUB_OUTPUT"
         echo "Pushed $IMMUTABLE and $MOVING (linux/amd64, revision $SHA_FULL)"
