@@ -325,3 +325,62 @@ so telemetry and `/version` cannot drift from what actually shipped.
 1. `aws ssm put-parameter` each secret under `/uplift/<service>/<KEY>` as `SecureString`.
 2. Grant the task execution role `ssm:GetParameters` + `kms:Decrypt`.
 3. Copy the usage block above into `.github/workflows/deploy.yml`.
+
+## Running off the EC2 runner (OIDC)
+
+The example above has **no credential step anywhere**, and that is not an
+omission: `ecr-build-push` and `ecs-deploy.yml` use whatever identity the runner
+already holds, which on `[self-hosted, linux, arm64, uplift-deploy]` is the EC2
+instance role. It is ambient, invisible in the YAML, and the reason moving these
+jobs to any other runner makes every deploy fail outright rather than slowly.
+
+To run them on a runner with no AWS identity of its own — `uplift-server-01`, or
+a GitHub-hosted runner — pass `aws_role_arn` and both will authenticate through
+GitHub OIDC instead. Leave it unset and nothing changes at all: the credential
+step is skipped and the ambient chain is used exactly as before.
+
+```yaml
+jobs:
+  build:
+    runs-on: ${{ fromJSON(vars.BUILD_RUNNER || '["self-hosted","uplift-server-01"]') }}
+    permissions:
+      contents: read
+      packages: read
+      id-token: write        # REQUIRED whenever aws_role_arn is passed
+    steps:
+      - id: build
+        uses: uplift-technology-company-limited/.github/.github/actions/ecr-build-push@v1
+        with:
+          ecr_repo:     <ecr-repo>
+          aws_region:   ${{ vars.AWS_REGION }}
+          aws_role_arn: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+
+  deploy:
+    needs: build
+    permissions:
+      contents: write        # required to push the release tag
+      id-token: write        # REQUIRED — see below
+    uses: uplift-technology-company-limited/.github/.github/workflows/ecs-deploy.yml@v1
+    with:
+      # ... the usual inputs ...
+      aws_role_arn:  ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      runner_labels: '["self-hosted","uplift-server-01"]'
+```
+
+Three things bite here, in order of how much time they cost:
+
+1. **`id-token: write` must be granted by the CALLER.** Neither a composite action
+   nor a called workflow can grant it to itself. Without it the token request
+   fails with a bare 400 that reads like an AWS trust-policy problem and is not.
+
+2. **Listing `permissions:` at all resets every unlisted one to none.** So on the
+   `deploy` job, `id-token: write` has to be added *next to* the `contents: write`
+   the release-tag step needs — replacing it silently breaks tagging instead.
+
+3. **The role's trust policy must name the repo.** `github-actions-deploy` trusts
+   an explicit list; a repo that is not on it gets `AssumeRoleWithWebIdentity`
+   denied. Add repos pinned to a ref (`repo:ORG/NAME:ref:refs/heads/main`) rather
+   than `:*`, which would let any PR branch assume a role that can deploy.
+
+The ARN comes from an org variable because **this repository is public** — never
+inline an account id or role ARN here.

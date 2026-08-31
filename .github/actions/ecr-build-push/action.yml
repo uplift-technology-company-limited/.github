@@ -51,6 +51,22 @@ inputs:
     required: false
     default: "true"
 
+  aws_role_arn:
+    description: >
+      Role to assume through GitHub OIDC before touching ECR. Leave EMPTY (the
+      default) and this action behaves exactly as it always has: no credential
+      step runs and the ambient default chain is used — on the EC2 runner that
+      is its instance role.
+
+      Pass an ARN and it authenticates explicitly, which is what lets this run on
+      a runner with no AWS identity of its own. THE CALLING JOB MUST THEN GRANT
+      `permissions: { id-token: write }` — without it the token request fails
+      with a bare 400 that reads like a trust-policy problem and is not.
+
+      This repo is public: pass the ARN from an org variable, never inline.
+    required: false
+    default: ""
+
 outputs:
   image:
     description: "Full image URI including the SHA tag — pass this to ecs-deploy."
@@ -62,6 +78,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # Skipped entirely when aws_role_arn is empty, which is what keeps every
+    # existing caller byte-for-byte unchanged. When set it must come FIRST:
+    # `sts get-caller-identity` below derives the registry account from whatever
+    # identity is active, so swapping credentials after it would resolve the
+    # registry against the wrong account.
+    - name: Configure AWS credentials (OIDC)
+      if: inputs.aws_role_arn != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ${{ inputs.aws_region }}
+        role-session-name: ecr-build-push
+
     # Resolved once and exported, because the two steps below both need them and
     # a composite action has no `vars` context of its own to fall back on.
     - name: Resolve registry
