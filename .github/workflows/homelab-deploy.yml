@@ -63,12 +63,18 @@ on:
 
       tier:
         description: >
-          `uat` or `dev`. Selects the stack directory: /srv/stacks/<tier>/. Only
-          those two values are accepted and anything else is a hard failure,
-          because this value is interpolated into the command sent over ssh —
-          the far side validates it too, but a workflow that can send arbitrary
-          strings down a deploy channel is a workflow one typo away from being
-          an injection primitive.
+          `uat`, `dev` or `prod`. Selects the stack directory: /srv/stacks/<tier>/.
+          Only those three values are accepted and anything else is a hard
+          failure, because this value is interpolated into the command sent over
+          ssh — the far side validates it too, but a workflow that can send
+          arbitrary strings down a deploy channel is a workflow one typo away
+          from being an injection primitive.
+
+          `prod` reaches REAL data that cannot be re-seeded. Callers using it
+          must also set `deploy_branch: main` — the default here is `uat`, and
+          a caller that changes one without the other would ship a uat branch
+          to production. The two are separate inputs on purpose (a tier is not
+          a branch), which is exactly why they are easy to mismatch.
         required: false
         type: string
         default: "uat"
@@ -195,20 +201,34 @@ jobs:
 
       # An allowlist, not a pattern match. `tier` is pasted into the command sent
       # down the ssh channel, and the far side's validating regex is the only
-      # other thing standing between a bad value and a root-owned script. Two
+      # other thing standing between a bad value and a root-owned script. Three
       # known-good strings is the entire universe of legal values, so say so.
-      - name: Guard — tier is one of the two known tiers
+      - name: Guard — tier is one of the three known tiers
         env:
           TIER: ${{ inputs.tier }}
+          DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
         run: |
           set -euo pipefail
           case "$TIER" in
-            uat|dev) echo "tier=$TIER" ;;
+            uat|dev|prod) echo "tier=$TIER" ;;
             *)
-              echo "::error::tier must be exactly 'uat' or 'dev' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
+              echo "::error::tier must be exactly 'uat', 'dev' or 'prod' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
               exit 1
               ;;
           esac
+
+          # `tier` and `deploy_branch` are separate inputs and both default to
+          # uat, so a caller that sets one and forgets the other gets a plausible
+          # combination rather than an error. The dangerous direction is only
+          # this one: shipping a uat branch into the tier that holds real data.
+          # Checked here rather than trusted to reviewers, because the branch
+          # gate above would pass — it compares the ref to whatever branch the
+          # caller named, and a caller that named the wrong branch is exactly
+          # the case it cannot catch.
+          if [ "$TIER" = "prod" ] && [ "$DEPLOY_BRANCH" != "main" ]; then
+            echo "::error::tier 'prod' requires deploy_branch 'main' (got '$DEPLOY_BRANCH'). prod holds data that cannot be re-seeded; it ships from main only."
+            exit 1
+          fi
 
       - name: Guard — deploy secrets are present
         env:
