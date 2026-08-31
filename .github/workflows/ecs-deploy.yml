@@ -184,6 +184,28 @@ on:
         required: false
         type: boolean
         default: true
+      aws_role_arn:
+        description: >
+          Role to assume through GitHub OIDC before anything touches AWS. Leave
+          EMPTY (the default) and this workflow behaves exactly as it always has:
+          no credential step runs at all and every `aws` call falls through to the
+          ambient default chain — which on the EC2 runner is its instance role.
+
+          Pass an ARN and the workflow authenticates explicitly instead, which is
+          what makes it runnable on a runner that has no AWS identity of its own
+          (uplift-server-01 in a living room, or a GitHub-hosted runner).
+
+          THE CALLING JOB MUST THEN GRANT `permissions: { id-token: write }`.
+          Without it the token request fails with a bare 400 that reads like a
+          trust-policy problem and is not. Grant it ALONGSIDE the `contents: write`
+          the release-tag step already needs — listing permissions at all resets
+          every unlisted one to none, so `id-token` on its own would silently
+          break tagging.
+
+          This repo is public: pass the ARN from an org variable, never inline.
+        required: false
+        type: string
+        default: ""
 
     outputs:
       task_definition_arn:
@@ -223,6 +245,17 @@ jobs:
             echo "::error::Missing org Actions variables:$missing — set them at Organisation → Settings → Secrets and variables → Actions → Variables."
             exit 1
           fi
+
+      # Skipped entirely when aws_role_arn is empty, which is what keeps every
+      # existing caller byte-for-byte unchanged: no step, no credential swap, the
+      # runner's ambient identity is still what talks to AWS.
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.aws_role_arn != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ecs-deploy-${{ inputs.service }}
 
       - name: Guard — must deploy from main
         if: inputs.require_main
