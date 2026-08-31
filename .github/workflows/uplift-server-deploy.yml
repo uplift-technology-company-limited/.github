@@ -1,6 +1,6 @@
-name: Homelab Deploy (reusable)
+name: Uplift Server Deploy (reusable)
 
-# Single source of truth for deploying a container to the home tier on
+# Single source of truth for deploying a container to the uplift-server tier on
 # uplift-server-01 — the `ecs-deploy.yml` twin for everything that does not run
 # in AWS.
 #
@@ -26,7 +26,7 @@ name: Homelab Deploy (reusable)
 #
 #   Because CI cannot edit the compose file, the compose file pins the MOVING
 #   `:uat` tag and the box-side script pulls it. The image is already in ECR by
-#   the time this workflow runs (see the `ecr-build-push-home` action); all this
+#   the time this workflow runs (see the `ecr-build-push-uplift-server` action); all this
 #   does is ask the box to go and get it.
 #
 # DIVISION OF LABOUR
@@ -241,7 +241,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: homelab-deploy-${{ inputs.service }}
+          role-session-name: uplift-server-deploy-${{ inputs.service }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Mint a short-lived ECR password
@@ -260,7 +260,7 @@ jobs:
           # a live registry credential. The file is removed unconditionally below,
           # on the same runner it was written to.
           umask 077
-          printf '%s' "$PW" > "$RUNNER_TEMP/homelab_ecr_pw"
+          printf '%s' "$PW" > "$RUNNER_TEMP/uplift_server_ecr_pw"
 
       # ── Ask the box to re-pull one service ─────────────────────────────────
       # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
@@ -302,8 +302,8 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          KEY_FILE="$RUNNER_TEMP/homelab_deploy_key"
-          KNOWN_HOSTS="$RUNNER_TEMP/homelab_known_hosts"
+          KEY_FILE="$RUNNER_TEMP/uplift_server_deploy_key"
+          KNOWN_HOSTS="$RUNNER_TEMP/uplift_server_known_hosts"
 
           # printf, not echo: the key must end in exactly one newline or OpenSSH
           # rejects it as malformed, and GitHub strips the trailing newline from
@@ -319,7 +319,7 @@ jobs:
           CMD="deploy $TIER/$SERVICE"
           if [ "$MIGRATE" = "true" ]; then CMD="$CMD migrate"; fi
           if [ "$SEED" = "true" ]; then CMD="$CMD seed"; fi
-          echo "Asking the home box: $CMD"
+          echo "Asking the uplift-server box: $CMD"
           ssh \
             -i "$KEY_FILE" \
             -o IdentitiesOnly=yes \
@@ -329,14 +329,14 @@ jobs:
             -o ConnectTimeout=15 \
             -o ServerAliveInterval=30 \
             "$DEPLOY_USER@$DEPLOY_HOST" "$CMD" \
-            < "$RUNNER_TEMP/homelab_ecr_pw"
+            < "$RUNNER_TEMP/uplift_server_ecr_pw"
 
       # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
       # outlives the job, and this runner is a machine in a house, not an
       # ephemeral VM that disappears at the end of the run.
       - name: Remove the deploy key and the registry password
         if: always()
-        run: rm -f "$RUNNER_TEMP/homelab_deploy_key" "$RUNNER_TEMP/homelab_known_hosts"
+        run: rm -f "$RUNNER_TEMP/uplift_server_deploy_key" "$RUNNER_TEMP/uplift_server_known_hosts"
 
       # ── Smoke test ─────────────────────────────────────────────────────────
       # THE BODY IS CHECKED, NOT JUST THE STATUS CODE. After a silent rollback,
@@ -434,7 +434,7 @@ jobs:
           TAG: ${{ inputs.release_tag }}
         run: |
           {
-            echo "### Homelab deploy — \`$SERVICE\` (\`$TIER\`)"
+            echo "### Uplift Server deploy — \`$SERVICE\` (\`$TIER\`)"
             echo ""
             echo "| | |"
             echo "|---|---|"
