@@ -373,9 +373,25 @@ jobs:
                           valueFrom: "arn:aws:ssm:\($region):\($acct):parameter\(.)" } ]'
           }
 
-          NAMES=$(aws ssm get-parameters-by-path \
+          # Do NOT swallow stderr here. This used to be `2>/dev/null || echo '[]'`,
+          # which turned an AccessDenied into an empty list — indistinguishable from
+          # a genuinely empty path. The completeness gate below then reported
+          # "Missing parameters: ..." and told the operator to create parameters that
+          # already existed, pointing at the wrong problem entirely. Cost two
+          # deploy attempts to work out that the real answer was an IAM grant.
+          if ! NAMES=$(aws ssm get-parameters-by-path \
             --path "$SSM_PATH" --recursive --region "$AWS_REGION" \
-            --query 'Parameters[].Name' --output json 2>/dev/null || echo '[]')
+            --query 'Parameters[].Name' --output json 2>ssm-err.txt); then
+            if grep -qi 'AccessDenied\|not authorized' ssm-err.txt; then
+              echo "::error::Cannot LIST $SSM_PATH — the deploy role lacks ssm:GetParametersByPath on it."
+              echo "::error::This is a permissions problem, NOT a missing parameter. Grant the action on"
+              echo "::error::arn:aws:ssm:<region>:<acct>:parameter<path>/* and re-run."
+            else
+              echo "::error::Could not list $SSM_PATH:"
+            fi
+            sed 's/^/  /' ssm-err.txt >&2
+            exit 1
+          fi
           echo "$NAMES" | arnify > own.json
 
           # Shared values, named one by one. Merging the whole shared path would
