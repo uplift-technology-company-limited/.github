@@ -1,15 +1,15 @@
-name: ECR build and push (home tier)
+name: ECR build and push (uplift-server tier)
 description: >
-  Build a linux/amd64 image on the uplift-server-01 home runner and push it to a
-  HOME-TIER ECR repository under a prefixed tag namespace (uat-<sha> plus the
+  Build a linux/amd64 image on the uplift-server-01 uplift-server runner and push it to a
+  UPLIFT-SERVER-TIER ECR repository under a prefixed tag namespace (uat-<sha> plus the
   moving :uat pointer). Emits the immutable URI for the record; the box's compose
-  file pins :uat and homelab-deploy asks the box to re-pull it.
+  file pins :uat and uplift-server-deploy asks the box to re-pull it.
 
 # WHY THIS IS A SEPARATE ACTION AND NOT NEW INPUTS ON ecr-build-push
 #
 #   1. THE TAG NAMESPACES COLLIDE. `ecr-build-push` tags `:<short-sha>` and
 #      `:latest`. Production builds linux/arm64 from `main` on the in-VPC
-#      Graviton runner; the home tier builds linux/amd64 from `uat` on a home
+#      Graviton runner; the uplift-server tier builds linux/amd64 from `uat` on a home
 #      x86_64 box. Pointed at the same ECR repository those two tag namespaces
 #      overwrite each other: the SAME COMMIT built for both architectures
 #      produces the same `:<short-sha>`, so whichever pushed last wins, and
@@ -20,7 +20,7 @@ description: >
 #      into a SEPARATE ECR repository and prefixes every tag with `uat-`.
 #      NEVER point `ecr_repo` at a production ECR repository.
 #
-#   2. THE HOME RUNNER HAS NO AWS IDENTITY. `ecr-build-push` runs on an EC2
+#   2. THE UPLIFT-SERVER RUNNER HAS NO AWS IDENTITY. `ecr-build-push` runs on an EC2
 #      instance inside the VPC and relies on the instance role being ambient in
 #      the environment. uplift-server-01 sits in a living room behind a home ISP:
 #      there is no instance profile, no metadata endpoint, nothing to fall back
@@ -31,7 +31,7 @@ description: >
 #
 #   3. IT MUST NOT DESTABILISE PRODUCTION. `ecr-build-push` is on the critical
 #      path of every prod deploy in the org. Adding a platform/tag/credentials
-#      matrix to it to serve one home box would put UAT-shaped bugs in front of
+#      matrix to it to serve one uplift-server box would put UAT-shaped bugs in front of
 #      every production rollout. The duplication here is deliberate and cheap.
 #
 # The image reference is never sent to the box. The compose files under
@@ -47,8 +47,8 @@ description: >
 inputs:
   ecr_repo:
     description: >
-      HOME-TIER ECR repository name, e.g. `sawathr-frontend-uat`. This must be a
-      repository dedicated to the home tier — see reason 1 in the header. Pointing
+      UPLIFT-SERVER-TIER ECR repository name, e.g. `sawathr-frontend-uat`. This must be a
+      repository dedicated to the uplift-server tier — see reason 1 in the header. Pointing
       it at a production repository will corrupt the production tag namespace.
     required: true
   aws_region:
@@ -60,9 +60,9 @@ inputs:
   aws_role_arn:
     description: >
       IAM role to assume via GitHub OIDC. Required, unlike in `ecr-build-push`:
-      the home runner is not in AWS, holds no instance role, and has no ambient
+      the uplift-server runner is not in AWS, holds no instance role, and has no ambient
       credentials of any kind. The role needs ecr:GetAuthorizationToken plus
-      push rights on the home-tier repository, and its trust policy must accept
+      push rights on the uplift-server-tier repository, and its trust policy must accept
       token.actions.githubusercontent.com for the calling repository.
     required: true
   aws_account_id:
@@ -134,7 +134,7 @@ runs:
       with:
         role-to-assume: ${{ inputs.aws_role_arn }}
         aws-region: ${{ inputs.aws_region }}
-        role-session-name: ecr-build-push-home
+        role-session-name: ecr-build-push-uplift-server
 
     # Resolved once and exported, because the steps below both need them and a
     # composite action has no `vars` context of its own to fall back on.
