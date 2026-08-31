@@ -11,9 +11,9 @@ every time.
 | Path | What it is |
 |---|---|
 | `.github/workflows/ecs-deploy.yml` | Reusable workflow — task definition, Traefik labels, secrets, rollout, rollback, release tag |
-| `.github/workflows/homelab-deploy.yml` | Reusable workflow — the home tier on `uplift-server-01`: branch gate, ssh deploy call, smoke test, release tag |
+| `.github/workflows/uplift-server-deploy.yml` | Reusable workflow — the uplift-server tier on `uplift-server-01`: branch gate, ssh deploy call, smoke test, release tag |
 | `.github/actions/ecr-build-push/` | Composite action — ECR login, image tag, native build, push |
-| `.github/actions/ecr-build-push-home/` | Composite action — the home-tier build: OIDC credentials, `linux/amd64`, `uat-<sha>` + `:uat`, local buildx cache |
+| `.github/actions/ecr-build-push-uplift-server/` | Composite action — the uplift-server-tier build: OIDC credentials, `linux/amd64`, `uat-<sha>` + `:uat`, local buildx cache |
 | `.github/actions/uplift-version-bump/` | Composite action — next `vX.Y.Z` from git tags (the upliftcontrolversion convention) |
 
 ## Division of labour
@@ -89,14 +89,14 @@ jobs:
 > every repo's deploy at once. Tags are moved deliberately, after a pilot repo
 > has deployed successfully.
 
-## The home tier: `homelab-deploy.yml`
+## The uplift-server tier: `uplift-server-deploy.yml`
 
-`ecs-deploy.yml` deploys to ECS. `homelab-deploy.yml` deploys the UAT and dev
-tiers that run on `uplift-server-01`, a home x86_64 box that also hosts a
+`ecs-deploy.yml` deploys to ECS. `uplift-server-deploy.yml` deploys the UAT and dev
+tiers that run on `uplift-server-01`, the company's own x86_64 box that also hosts a
 self-hosted runner (`[self-hosted, uplift-server-01]`).
 
 **Reach for it instead of `ecs-deploy.yml` whenever the target is that box.** The
-two are not variants of each other and share no code, because on the home box CI
+two are not variants of each other and share no code, because on the uplift-server box CI
 is deliberately powerless. The runner user (`ghrunner`) drives its own *rootless*
 dockerd — a different image store from the system docker that runs the services —
 is not in group `docker`, and is firewalled off from loopback, the LAN and the
@@ -123,7 +123,7 @@ sent to the box**. Do not add one.
 ### Division of labour
 
 ```
-caller repo   →  language setup, gates, build + push to the HOME-TIER ECR repo
+caller repo   →  language setup, gates, build + push to the UPLIFT-SERVER-TIER ECR repo
 this workflow →  branch gate, ssh deploy call, smoke test, release tag
 ```
 
@@ -145,7 +145,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-      id-token: write          # required — the home runner has no AWS identity
+      id-token: write          # required — the uplift-server runner has no AWS identity
     outputs:
       version: ${{ steps.ver.outputs.version }}
       tag:     ${{ steps.ver.outputs.tag }}
@@ -158,7 +158,7 @@ jobs:
       - id: ver
         uses: uplift-technology-company-limited/.github/.github/actions/uplift-version-bump@v1
 
-      - uses: uplift-technology-company-limited/.github/.github/actions/ecr-build-push-home@v1
+      - uses: uplift-technology-company-limited/.github/.github/actions/ecr-build-push-uplift-server@v1
         with:
           ecr_repo:     <service>-uat          # NEVER a production repository
           aws_region:   ${{ vars.AWS_REGION }}
@@ -171,7 +171,7 @@ jobs:
     needs: build
     permissions:
       contents: write        # required to push the release tag
-    uses: uplift-technology-company-limited/.github/.github/workflows/homelab-deploy.yml@v1
+    uses: uplift-technology-company-limited/.github/.github/workflows/uplift-server-deploy.yml@v1
     with:
       service:     <service>
       tier:        uat
@@ -189,17 +189,17 @@ contract is readable from the file.
 
 > **Pin `@v1`, never `@main`** — the same rule as everywhere else in this repo.
 
-### Things the home tier gets right that are easy to get wrong
+### Things the uplift-server tier gets right that are easy to get wrong
 
 - **The build pushes to a SEPARATE ECR repository under a `uat-` tag prefix.**
   `ecr-build-push` tags `:<short-sha>` and `:latest`; production builds arm64
-  from `main` and the home tier builds amd64 from `uat`, so pointed at one
+  from `main` and the uplift-server tier builds amd64 from `uat`, so pointed at one
   repository the same commit's two architectures overwrite each other's `:<sha>`
   and contest `:latest` outright. That hands production an amd64 image that will
   not start on Graviton. Hence a second action and a second repository, not new
   inputs on the existing one.
-- **The home runner has no AWS identity.** No instance profile, no metadata
-  endpoint. `ecr-build-push-home` assumes a role through OIDC, so the calling job
+- **The uplift-server runner has no AWS identity.** No instance profile, no metadata
+  endpoint. `ecr-build-push-uplift-server` assumes a role through OIDC, so the calling job
   must grant `id-token: write`.
 - **The buildx cache is `type=local` on NVMe, not `type=gha`.** The GHA cache
   backend is a download and (with `mode=max`) a full re-upload of every layer
