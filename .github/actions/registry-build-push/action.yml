@@ -62,9 +62,21 @@ inputs:
     required: false
     default: ""
   push_latest:
-    description: "Also tag and push :latest."
+    description: "Also tag and push the moving tag (see `moving_tag`)."
     required: false
     default: "true"
+  moving_tag:
+    description: >
+      ชื่อ tag ที่ "ขยับ" ซึ่ง compose บนเครื่องปลายทาง pin ไว้ — deploy คือการ
+      pull tag นี้ใหม่ ไม่ใช่การแก้ไฟล์ compose
+
+      🔴 tier `prod` ของ uplift-server-01 บังคับให้ pin `:prod` **ไม่ใช่ `:latest`**
+      (`/srv/stacks/prod/README.md` ข้อ 2) เพราะ `:latest` ไม่บอกว่ามาจาก branch ไหน
+      และถ้าวันหนึ่งมี tier อื่น push เข้า repo เดียวกันก็จะทับกันเงียบ ๆ
+
+      default `latest` ⇒ caller เดิมได้พฤติกรรมเดิมเป๊ะ
+    required: false
+    default: "latest"
 
 outputs:
   image:
@@ -106,13 +118,14 @@ runs:
         USE_GH_SECRET: ${{ inputs.github_token_secret }}
         PLATFORM: ${{ inputs.platform }}
         PUSH_LATEST: ${{ inputs.push_latest }}
+        MOVING_TAG: ${{ inputs.moving_tag }}
       run: |
         set -euo pipefail
         SHA=$(git rev-parse --short HEAD)
         IMAGE="$REGISTRY/$IMAGE_REPO:$SHA"
 
         args=(build -f "$DOCKERFILE" -t "$IMAGE")
-        [ "$PUSH_LATEST" = "true" ] && args+=(-t "$REGISTRY/$IMAGE_REPO:latest")
+        [ "$PUSH_LATEST" = "true" ] && args+=(-t "$REGISTRY/$IMAGE_REPO:$MOVING_TAG")
         [ -n "$PLATFORM" ] && args+=(--platform "$PLATFORM")
         [ "$USE_GH_SECRET" = "true" ] && args+=(--secret id=github_token,env=GITHUB_TOKEN)
 
@@ -124,7 +137,7 @@ runs:
 
         DOCKER_BUILDKIT=1 docker "${args[@]}"
         docker push "$IMAGE"
-        [ "$PUSH_LATEST" = "true" ] && docker push "$REGISTRY/$IMAGE_REPO:latest"
+        [ "$PUSH_LATEST" = "true" ] && docker push "$REGISTRY/$IMAGE_REPO:$MOVING_TAG"
 
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         echo "tag=$SHA" >> "$GITHUB_OUTPUT"
