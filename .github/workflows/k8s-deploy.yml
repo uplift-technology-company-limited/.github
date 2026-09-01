@@ -84,6 +84,14 @@ on:
         required: false
         type: number
         default: 300
+      allowed_ref:
+        description: >
+          ref เดียวที่ deploy ได้ · default `refs/heads/main` ตาม branch gate ของ prod
+          🔴 tier ที่ไม่ใช่ prod ต้องส่งค่ามาเอง (UAT ใช้ `refs/heads/uat`) — ตั้งใจให้
+          ต้องพิมพ์ออกมา ไม่ใช่ปล่อยผ่านเงียบๆ เพราะ guard ที่ปิดง่ายคือ guard ที่ไม่มี
+        required: false
+        type: string
+        default: "refs/heads/main"
       runner_labels:
         description: "JSON array ของ label ของ runner"
         required: false
@@ -119,14 +127,16 @@ jobs:
     steps:
       # gate เดียวกับทุก repo — ปล่อยให้ deploy จาก branch อื่นได้คือการทำลาย
       # ความหมายของคำว่า main
-      - name: Guard — must deploy from main
+      - name: Guard — ref ที่อนุญาต
         env:
           GH_REF: ${{ github.ref }}
+          ALLOWED: ${{ inputs.allowed_ref }}
         run: |
-          if [ "$GH_REF" != "refs/heads/main" ]; then
-            echo "::error::Deploy ได้จาก main เท่านั้น (ได้ $GH_REF) — branch gate: feature → dev → main"
+          if [ "$GH_REF" != "$ALLOWED" ]; then
+            echo "::error::deploy ได้จาก $ALLOWED เท่านั้น (ได้ $GH_REF) — branch gate: feature → dev → main"
             exit 1
           fi
+          echo "ref ผ่าน: $GH_REF"
 
       - name: Guard — inputs ที่จำเป็น
         env:
