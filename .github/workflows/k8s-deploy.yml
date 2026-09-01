@@ -1,0 +1,336 @@
+name: k3s Deploy (reusable)
+
+# คู่แฝดของ ecs-deploy.yml สำหรับ cluster k3s ที่ uplift-server-01 + droplet sgp1
+#
+# WHY THIS EXISTS
+#   ecs-deploy.yml เป็นเจ้าของ "ครึ่ง infra" ของการ deploy ลง ECS มาตลอด — task
+#   definition, Traefik label, secret, rollout, rollback, release tag — เพื่อให้
+#   การเปลี่ยนอะไรที่เป็นเรื่อง infra ลงที่เดียว ไม่ใช่ลงทีละ repo · ตอนนี้ปลายทาง
+#   เปลี่ยนเป็น k3s แล้ว แต่เหตุผลของการรวมศูนย์ยังเหมือนเดิมทุกข้อ ⇒ ไฟล์นี้ทำหน้าที่
+#   เดียวกันโดยไม่ต้องให้แต่ละ repo มานั่งเขียน manifest ของตัวเอง
+#
+# DIVISION OF LABOUR — เหมือน ecs-deploy เป๊ะ
+#   caller repo   → ตั้ง toolchain, gate, build image, push registry   (เรื่องของแอป)
+#   ไฟล์นี้        → Deployment/Service/Secret, rollout, smoke test, rollback  (เรื่องของ infra)
+#
+# ไม่มี identifier ฮาร์ดโค้ดที่นี่ — repo นี้เป็น public · host ของ registry, cluster
+# endpoint และรหัสทั้งหมดมาจาก secrets/vars ของ repo ที่เรียก
+#
+# PIN A TAG, NOT A BRANCH — อ้าง @v1 เสมอ ไม่ใช่ @main
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "ชื่อ service — ใช้เป็นชื่อ Deployment/Service/Secret และ label `app`"
+        required: true
+        type: string
+      image:
+        description: "image URI เต็มที่ push ขึ้น registry แล้ว (output ของ job build)"
+        required: true
+        type: string
+      container_port:
+        description: "พอร์ตที่แอป listen ในคอนเทนเนอร์"
+        required: true
+        type: number
+
+      namespace:
+        description: "k8s namespace · สร้างให้ถ้ายังไม่มี"
+        required: false
+        type: string
+        default: "default"
+      replicas:
+        description: "จำนวน pod"
+        required: false
+        type: number
+        default: 1
+      node_selector:
+        description: >
+          บังคับให้ลง node ไหน เช่น `kubernetes.io/hostname=uplift-prod-sgp1`
+          🔴 จำเป็นสำหรับ pod ที่ต้องต่อ Managed Database — trusted sources ของ DO
+          อนุญาตตาม droplet id ⇒ pod ที่ไปโผล่บน node ที่บ้านจะต่อ DB ไม่ได้ และ
+          อาการจะออกมาเป็น "บางครั้งก็ได้ บางครั้งก็ไม่ได้" ตามที่ scheduler เลือก
+        required: false
+        type: string
+        default: ""
+      health_path:
+        description: "path ที่ smoke test ยิง · ยิงจากใน cluster ผ่าน Service ไม่ผ่าน ingress"
+        required: false
+        type: string
+        default: "/health"
+      env_json:
+        description: >
+          JSON object ของ env ที่ไม่ใช่ความลับ — service URL, NODE_ENV, ฯลฯ
+          ความลับต้องไปทาง `app_secrets_json` เท่านั้น ไม่งั้นมันจะโผล่ใน manifest
+          และใน log ของ kubectl
+        required: false
+        type: string
+        default: "{}"
+      command_json:
+        description: >
+          JSON array ที่จะไปเป็น `command` ของคอนเทนเนอร์ · ว่าง = ใช้ ENTRYPOINT ของ image
+          ใช้ตอนที่ต้องรัน migrate ก่อนเริ่ม เช่น
+          `["sh","-c","bunx prisma migrate deploy && exec bun run src/index.ts"]`
+        required: false
+        type: string
+        default: "[]"
+      memory_limit:
+        description: "memory limit ของคอนเทนเนอร์"
+        required: false
+        type: string
+        default: "1Gi"
+      timeout_seconds:
+        description: "รอ rollout นานสุดกี่วินาทีก่อนถือว่าไม่ stabilise"
+        required: false
+        type: number
+        default: 300
+      runner_labels:
+        description: "JSON array ของ label ของ runner"
+        required: false
+        type: string
+        default: '["self-hosted","uplift-server-01"]'
+
+    secrets:
+      kubeconfig:
+        description: >
+          kubeconfig ของ cluster เข้ารหัส base64 · ต้องชี้ไปที่ Tailscale IP ของ
+          control-plane ไม่ใช่ 127.0.0.1 — runner ไม่ได้อยู่บนเครื่องเดียวกับ
+          control-plane และเห็นกันผ่าน tailnet เท่านั้น
+        required: true
+      registry_server:
+        description: "host ของ registry สำหรับสร้าง imagePullSecret"
+        required: true
+      registry_username:
+        required: true
+      registry_password:
+        required: true
+      app_secrets_json:
+        description: >
+          JSON object ของ env ที่เป็นความลับ — จะถูกสร้างเป็น k8s Secret แล้ว
+          อ้างด้วย envFrom · ค่าไม่เคยถูกพิมพ์ออก log
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 30
+
+    steps:
+      # gate เดียวกับทุก repo — ปล่อยให้ deploy จาก branch อื่นได้คือการทำลาย
+      # ความหมายของคำว่า main
+      - name: Guard — must deploy from main
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploy ได้จาก main เท่านั้น (ได้ $GH_REF) — branch gate: feature → dev → main"
+            exit 1
+          fi
+
+      - name: Guard — inputs ที่จำเป็น
+        env:
+          IMAGE: ${{ inputs.image }}
+          KUBECFG: ${{ secrets.kubeconfig }}
+        run: |
+          set -euo pipefail
+          [ -n "$IMAGE" ]  || { echo "::error::image ว่าง — job build ไม่ได้ส่ง output ออกมา"; exit 1; }
+          [ -n "$KUBECFG" ] || { echo "::error::secret kubeconfig ว่าง — secret ที่ไม่ได้ตั้งจะมาถึงเป็นสตริงว่าง แล้ว kubectl จะไปคุยกับ localhost แทนที่จะฟ้อง"; exit 1; }
+
+      - name: Set up kubectl
+        run: |
+          set -euo pipefail
+          command -v kubectl >/dev/null && exit 0
+          V=$(curl -sL https://dl.k8s.io/release/stable.txt)
+          mkdir -p "$HOME/.local/bin"
+          curl -sLo "$HOME/.local/bin/kubectl" "https://dl.k8s.io/release/$V/bin/linux/amd64/kubectl"
+          chmod +x "$HOME/.local/bin/kubectl"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # เขียนลง RUNNER_TEMP ไม่ใช่ ~/.kube — runner เครื่องนี้ใช้ร่วมกันหลาย repo
+      # ไฟล์ใน home จะอยู่ข้ามงานให้ repo อื่นอ่านได้
+      - name: Write kubeconfig
+        env:
+          KUBECFG: ${{ secrets.kubeconfig }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
+          printf '%s' "$KUBECFG" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          kubectl version --request-timeout=15s -o yaml 2>/dev/null | grep -m1 gitVersion || true
+          kubectl get nodes --request-timeout=15s -o name
+
+      - name: Ensure namespace + pull secret
+        env:
+          NS: ${{ inputs.namespace }}
+          REG: ${{ secrets.registry_server }}
+          REG_USER: ${{ secrets.registry_username }}
+          REG_PASS: ${{ secrets.registry_password }}
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+          # --dry-run|apply ทำให้ idempotent · `create secret` เปล่าๆ จะ fail รอบสอง
+          kubectl -n "$NS" create secret docker-registry registry-pull \
+            --docker-server="$REG" --docker-username="$REG_USER" --docker-password="$REG_PASS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create app secret
+        if: ${{ secrets.app_secrets_json != '' }}
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+          APP_SECRETS: ${{ secrets.app_secrets_json }}
+        run: |
+          set -euo pipefail
+          # ผ่าน python ไม่ใช่ shell loop — ค่าที่มี newline, `=`, หรือเครื่องหมายคำพูด
+          # จะทำให้ `--from-literal` ที่ประกอบด้วยมือแตก และมันแตกแบบเงียบ
+          python3 - <<'PY' > "$RUNNER_TEMP/secret.yaml"
+          import base64, json, os
+          data = json.loads(os.environ["APP_SECRETS"])
+          if not isinstance(data, dict):
+              raise SystemExit("app_secrets_json ต้องเป็น JSON object")
+          print("apiVersion: v1\nkind: Secret\nmetadata:")
+          print(f"  name: {os.environ['SVC']}-env\n  namespace: {os.environ['NS']}\ntype: Opaque\ndata:")
+          for k, v in data.items():
+              enc = base64.b64encode(str(v).encode()).decode()
+              print(f"  {k}: {enc}")
+          PY
+          kubectl apply -f "$RUNNER_TEMP/secret.yaml"
+          rm -f "$RUNNER_TEMP/secret.yaml"
+          echo "สร้าง Secret ${SVC}-env แล้ว ($(python3 -c "import json,os;print(len(json.loads(os.environ['APP_SECRETS'])))") key)"
+
+      - name: Render manifest
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+          IMAGE: ${{ inputs.image }}
+          PORT: ${{ inputs.container_port }}
+          REPLICAS: ${{ inputs.replicas }}
+          NODE_SELECTOR: ${{ inputs.node_selector }}
+          ENV_JSON: ${{ inputs.env_json }}
+          COMMAND_JSON: ${{ inputs.command_json }}
+          MEM: ${{ inputs.memory_limit }}
+          HAS_SECRET: ${{ secrets.app_secrets_json != '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "$RUNNER_TEMP/deploy.yaml"
+          import json, os
+          e = os.environ
+          ns, svc, port = e["NS"], e["SVC"], int(e["PORT"])
+          env  = json.loads(e.get("ENV_JSON") or "{}")
+          cmd  = json.loads(e.get("COMMAND_JSON") or "[]")
+          sel  = e.get("NODE_SELECTOR", "").strip()
+
+          L = []
+          A = L.append
+          A("apiVersion: apps/v1\nkind: Deployment")
+          A(f"metadata:\n  name: {svc}\n  namespace: {ns}\n  labels: {{ app: {svc} }}")
+          A(f"spec:\n  replicas: {int(e['REPLICAS'])}")
+          A(f"  selector:\n    matchLabels: {{ app: {svc} }}")
+          # surge 1 / unavailable 0 — ตัวใหม่ต้อง ready ก่อนตัวเก่าถึงจะถูกฆ่า
+          # ไม่งั้น rollout ที่ image พังจะทำให้ไม่มี pod เสิร์ฟเลยระหว่างทาง
+          A("  strategy:\n    type: RollingUpdate")
+          A("    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }")
+          A(f"  template:\n    metadata:\n      labels: {{ app: {svc} }}")
+          A("    spec:")
+          A("      imagePullSecrets: [{ name: registry-pull }]")
+          if sel:
+              k, _, v = sel.partition("=")
+              A(f"      nodeSelector: {{ {k}: {v} }}")
+          A("      containers:")
+          A(f"        - name: {svc}")
+          A(f"          image: {e['IMAGE']}")
+          # Always — tag ที่ขยับได้ (`:prod`, `:latest`) กับ IfNotPresent เข้ากันไม่ได้
+          A("          imagePullPolicy: Always")
+          if cmd:
+              A(f"          command: {json.dumps(cmd)}")
+          A(f"          ports: [{{ containerPort: {port} }}]")
+          if env:
+              A("          env:")
+              for k, v in env.items():
+                  A(f"            - name: {k}\n              value: {json.dumps(str(v))}")
+          if e.get("HAS_SECRET") == "true":
+              A(f"          envFrom:\n            - secretRef: {{ name: {svc}-env }}")
+          A(f"          resources:\n            limits: {{ memory: {e['MEM']} }}")
+          # readiness ผูกกับ rollout: kubectl rollout status จะไม่ยอมจบจนกว่า pod
+          # จะ ready ⇒ container ที่ start แล้วตายทีหลังจะถูกจับได้ ไม่ใช่นับว่าสำเร็จ
+          A("          readinessProbe:")
+          A(f"            tcpSocket: {{ port: {port} }}")
+          A("            initialDelaySeconds: 5\n            periodSeconds: 5\n            failureThreshold: 24")
+          A("---")
+          A(f"apiVersion: v1\nkind: Service\nmetadata:\n  name: {svc}\n  namespace: {ns}")
+          A(f"spec:\n  selector: {{ app: {svc} }}")
+          A(f"  ports: [{{ port: {port}, targetPort: {port} }}]")
+          print("\n".join(L))
+          PY
+          echo "── manifest ที่จะ apply ──"
+          grep -vE "^\s*$" "$RUNNER_TEMP/deploy.yaml"
+
+      - name: Apply
+        run: kubectl apply -f "$RUNNER_TEMP/deploy.yaml"
+
+      - name: Wait for rollout
+        id: rollout
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+          T: ${{ inputs.timeout_seconds }}
+        run: |
+          set -euo pipefail
+          if ! kubectl -n "$NS" rollout status "deploy/$SVC" --timeout="${T}s"; then
+            echo "::error::rollout ไม่ stabilise ใน ${T}s"
+            echo "── pod ──"; kubectl -n "$NS" get pods -l "app=$SVC" -o wide || true
+            echo "── event ──"; kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -20 || true
+            echo "── log ──"; kubectl -n "$NS" logs -l "app=$SVC" --tail=60 --all-containers || true
+            exit 1
+          fi
+
+      # ยิงจากใน cluster ผ่าน Service — ไม่ผ่าน ingress/cloudflare
+      # ตั้งใจ: ถ้ายิงผ่านขอบนอก smoke test จะเขียวได้จาก revision เก่าที่ยังเสิร์ฟอยู่
+      # แล้วเราจะไม่มีทางรู้ว่าตัวใหม่ใช้ได้จริงไหม
+      - name: Smoke test
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+          PORT: ${{ inputs.container_port }}
+          HP: ${{ inputs.health_path }}
+        run: |
+          set -euo pipefail
+          POD="smoke-$SVC-$RANDOM"
+          if kubectl -n "$NS" run "$POD" --rm -i --restart=Never --quiet \
+               --image=curlimages/curl:8.11.1 --timeout=90s -- \
+               -fsS --max-time 20 "http://$SVC:$PORT$HP" >/dev/null 2>&1; then
+            echo "smoke test ผ่าน — http://$SVC:$PORT$HP"
+          else
+            echo "::error::smoke test ไม่ผ่านที่ $HP"
+            kubectl -n "$NS" logs -l "app=$SVC" --tail=60 --all-containers || true
+            exit 1
+          fi
+
+      - name: Roll back on failure
+        if: failure() && steps.rollout.outcome != 'skipped'
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+        run: |
+          echo "::warning::deploy ล้ม — ย้อนกลับ revision ก่อนหน้า"
+          kubectl -n "$NS" rollout undo "deploy/$SVC" || true
+          kubectl -n "$NS" rollout status "deploy/$SVC" --timeout=180s || true
+
+      - name: Summary
+        if: always()
+        env:
+          NS: ${{ inputs.namespace }}
+          SVC: ${{ inputs.service }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          {
+            echo "### k3s deploy — \`$SVC\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| namespace | \`$NS\` |"
+            echo "| image | \`$IMAGE\` |"
+            echo "| node | \`$(kubectl -n "$NS" get pods -l "app=$SVC" -o jsonpath='{.items[*].spec.nodeName}' 2>/dev/null || echo '-')\` |"
+            echo "| ready | \`$(kubectl -n "$NS" get deploy "$SVC" -o jsonpath='{.status.readyReplicas}/{.status.replicas}' 2>/dev/null || echo '-')\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
