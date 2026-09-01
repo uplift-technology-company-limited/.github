@@ -260,7 +260,13 @@ jobs:
           # a live registry credential. The file is removed unconditionally below,
           # on the same runner it was written to.
           umask 077
-          printf '%s' "$PW" > "$RUNNER_TEMP/uplift_server_ecr_pw"
+          # 🔴 2026-09-01 · สองบรรทัด: username แล้ว password
+          # ฝั่งเครื่อง (uplift-deploy.sh) เลิกฮาร์ดโค้ด `--username AWS` แล้ว เพราะ registry
+          # ของเราเอง (zot) มีบัญชีจริง ⇒ ช่องทางนี้ส่ง username มาด้วยเสมอ · ของ ECR
+          # username คือคำว่า AWS อยู่แล้ว จึงเขียนตรง ๆ ตรงนี้ได้
+          # ถ้าไม่แก้ตรงนี้: พอเครื่องติดตั้งสคริปต์ใหม่ deploy ทุกตัวที่ยังเรียก workflow นี้
+          # จะตายด้วย "stdin มีบรรทัดเดียว" ซึ่งอ่านแล้วไม่รู้เลยว่าต้นเหตุอยู่ที่ workflow
+          printf 'AWS\n%s\n' "$PW" > "$RUNNER_TEMP/uplift_server_ecr_pw"
 
       # ── Ask the box to re-pull one service ─────────────────────────────────
       # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
