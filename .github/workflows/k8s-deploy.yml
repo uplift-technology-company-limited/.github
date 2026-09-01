@@ -61,7 +61,7 @@ on:
       env_json:
         description: >
           JSON object ของ env ที่ไม่ใช่ความลับ — service URL, NODE_ENV, ฯลฯ
-          ความลับต้องไปทาง `app_secrets_json` เท่านั้น ไม่งั้นมันจะโผล่ใน manifest
+          ความลับต้องไปทาง `env_secret_name` เท่านั้น ไม่งั้นมันจะโผล่ใน manifest
           และใน log ของ kubectl
         required: false
         type: string
@@ -92,6 +92,16 @@ on:
         required: false
         type: string
         default: "refs/heads/main"
+      env_secret_name:
+        description: >
+          ชื่อ k8s Secret ที่มีอยู่แล้วใน namespace ให้เอามาต่อด้วย envFrom
+          🔴 ตั้งใจให้เป็น "ชื่อ" ไม่ใช่ "ค่า": GitHub ไม่อนุญาตให้ job ที่เรียก reusable
+          workflow มี `environment:` ⇒ caller อ่าน secret ระดับ environment ไม่ได้ถ้า
+          จะส่งค่าเข้ามาที่นี่ · ให้ caller สร้าง Secret เองใน job ที่มี `environment:`
+          แล้วส่งมาแค่ชื่อ ⇒ ค่าความลับไม่เคยข้ามขอบ workflow เลย ซึ่งปลอดภัยกว่าด้วย
+        required: false
+        type: string
+        default: ""
       runner_labels:
         description: "JSON array ของ label ของ runner"
         required: false
@@ -112,11 +122,6 @@ on:
         required: true
       registry_password:
         required: true
-      app_secrets_json:
-        description: >
-          JSON object ของ env ที่เป็นความลับ — จะถูกสร้างเป็น k8s Secret แล้ว
-          อ้างด้วย envFrom · ค่าไม่เคยถูกพิมพ์ออก log
-        required: false
 
 jobs:
   deploy:
@@ -184,31 +189,6 @@ jobs:
             --docker-server="$REG" --docker-username="$REG_USER" --docker-password="$REG_PASS" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Create app secret
-        if: ${{ secrets.app_secrets_json != '' }}
-        env:
-          NS: ${{ inputs.namespace }}
-          SVC: ${{ inputs.service }}
-          APP_SECRETS: ${{ secrets.app_secrets_json }}
-        run: |
-          set -euo pipefail
-          # ผ่าน python ไม่ใช่ shell loop — ค่าที่มี newline, `=`, หรือเครื่องหมายคำพูด
-          # จะทำให้ `--from-literal` ที่ประกอบด้วยมือแตก และมันแตกแบบเงียบ
-          python3 - <<'PY' > "$RUNNER_TEMP/secret.yaml"
-          import base64, json, os
-          data = json.loads(os.environ["APP_SECRETS"])
-          if not isinstance(data, dict):
-              raise SystemExit("app_secrets_json ต้องเป็น JSON object")
-          print("apiVersion: v1\nkind: Secret\nmetadata:")
-          print(f"  name: {os.environ['SVC']}-env\n  namespace: {os.environ['NS']}\ntype: Opaque\ndata:")
-          for k, v in data.items():
-              enc = base64.b64encode(str(v).encode()).decode()
-              print(f"  {k}: {enc}")
-          PY
-          kubectl apply -f "$RUNNER_TEMP/secret.yaml"
-          rm -f "$RUNNER_TEMP/secret.yaml"
-          echo "สร้าง Secret ${SVC}-env แล้ว ($(python3 -c "import json,os;print(len(json.loads(os.environ['APP_SECRETS'])))") key)"
-
       - name: Render manifest
         env:
           NS: ${{ inputs.namespace }}
@@ -220,7 +200,7 @@ jobs:
           ENV_JSON: ${{ inputs.env_json }}
           COMMAND_JSON: ${{ inputs.command_json }}
           MEM: ${{ inputs.memory_limit }}
-          HAS_SECRET: ${{ secrets.app_secrets_json != '' }}
+          ENV_SECRET: ${{ inputs.env_secret_name }}
         run: |
           set -euo pipefail
           python3 - <<'PY' > "$RUNNER_TEMP/deploy.yaml"
@@ -259,8 +239,8 @@ jobs:
               A("          env:")
               for k, v in env.items():
                   A(f"            - name: {k}\n              value: {json.dumps(str(v))}")
-          if e.get("HAS_SECRET") == "true":
-              A(f"          envFrom:\n            - secretRef: {{ name: {svc}-env }}")
+          if e.get("ENV_SECRET"):
+              A(f"          envFrom:\n            - secretRef: {{ name: {e['ENV_SECRET']} }}")
           A(f"          resources:\n            limits: {{ memory: {e['MEM']} }}")
           # readiness ผูกกับ rollout: kubectl rollout status จะไม่ยอมจบจนกว่า pod
           # จะ ready ⇒ container ที่ start แล้วตายทีหลังจะถูกจับได้ ไม่ใช่นับว่าสำเร็จ
