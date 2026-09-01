@@ -1,0 +1,454 @@
+name: Docker Deploy (reusable)
+
+# The replacement for `ecs-deploy.yml`. AWS was suspended on 2026-08-31 and every
+# repo that still calls `ecs-deploy@v1` is calling `aws ecs` against an account
+# that no longer answers, so nothing ships until this exists. See the `infra`
+# repo, docs/plan-repos.md B2 — this workflow IS B2.
+#
+# WHAT CHANGED FROM uplift-server-deploy.yml, AND WHY THIS IS A SIBLING NOT A FORK
+#   The deploy channel is identical and deliberately so: ssh to a restricted user
+#   whose authorized_keys entry pins a FORCED COMMAND, which runs a root-owned
+#   script that resolves /srv/stacks/<tier>/<service>.yml and does, for exactly
+#   one service:
+#       docker compose -f <that file> pull && up -d
+#   CI never sends an image reference and never writes a compose file. The compose
+#   files are reconciled from the `infra` repo by a GitOps agent. A compromised
+#   workflow can ask the box to re-pull a service it already knows about, and
+#   nothing else. That property is the whole design and must survive every edit.
+#
+#   Two things differ, both consequences of leaving AWS:
+#     1. `tier` accepts `prod`. The droplet (DO, sgp1) runs the prod tier; the
+#        home box runs dev/uat. Which machine is which is decided entirely by
+#        DEPLOY_HOST — this workflow hardcodes no address.
+#     2. The registry credential is a REGISTRY_USERNAME/REGISTRY_PASSWORD pair
+#        for the self-hosted registry (zot at registry.uplifttech.co), not a
+#        12-hour ECR password minted through OIDC. There is no AWS anywhere in
+#        this file, and none may be added back.
+#
+# THE FAR SIDE READS TWO LINES ON STDIN: username, then password.
+#   The ECR-era script hardcoded `docker login --username AWS` and sniffed the
+#   registry host out of the compose file by matching `*.amazonaws.com`. Neither
+#   holds now, so the credential arrives as two lines rather than one. A far side
+#   that still expects a single line will log in as `AWS` with the username as
+#   its password and fail with a 401 that reads like a rotated secret — see the
+#   deploy step, which states the contract again where it is actually sent.
+#
+# NO IDENTIFIERS ARE HARDCODED HERE. This repo is public; the box's address, its
+# host key, the deploy key and the registry credential all arrive as secrets from
+# the calling repository.
+#
+# PIN A TAG, NOT A BRANCH. Callers must reference @v1 (or a newer major), never
+# @main — a bug here would otherwise break every repo's deploy simultaneously.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: >
+          Compose service name. This is ALSO the compose file basename the far
+          side resolves: /srv/stacks/<tier>/<service>.yml. It is sent verbatim to
+          the forced command, which validates it again on its own side.
+        required: true
+        type: string
+      public_host:
+        description: "Public hostname the smoke test polls, e.g. sawathrm-uat.uplifttech.dev."
+        required: true
+        type: string
+      version:
+        description: >
+          The version the newly built image reports. The smoke test looks for this
+          string in the response body — it is what proves the revision that just
+          built is the one now serving.
+        required: true
+        type: string
+
+      tier:
+        description: >
+          `prod`, `uat` or `dev`. Selects the stack directory: /srv/stacks/<tier>/
+          on whichever machine DEPLOY_HOST points at — prod lives on the droplet,
+          dev/uat on the home box. Only those three values are accepted and
+          anything else is a hard failure,
+          because this value is interpolated into the command sent over ssh —
+          the far side validates it too, but a workflow that can send arbitrary
+          strings down a deploy channel is a workflow one typo away from being
+          an injection primitive.
+        required: false
+        type: string
+        default: "uat"
+      smoke_path:
+        description: "Path appended to public_host for the smoke test."
+        required: false
+        type: string
+        default: "/health"
+      release_tag:
+        description: >
+          Tag to push, e.g. v1.2.3 — normally the `tag` output of the
+          uplift-version-bump action. Pushed only AFTER a green smoke test, so a
+          failed deploy leaves no orphan tag and the counter does not burn. Empty
+          skips it.
+        required: false
+        type: string
+        default: ""
+      smoke_retries:
+        description: "How many times to poll before giving up."
+        required: false
+        type: number
+        default: 20
+      smoke_interval:
+        description: "Seconds between smoke-test attempts."
+        required: false
+        type: number
+        default: 15
+      migrate:
+        description: >
+          Ask the box to run this service's migration BEFORE the new container
+          comes up — the same ordering the ECS workflow uses. Sent as the literal
+          word `migrate` on the forced-command channel; WHAT that means is the
+          `uplift.migrate` label on the service in its compose file, which lives
+          in the `infra` repo under GitOps and which this workflow cannot edit.
+          CI chooses whether, never what. A service whose compose file carries no
+          such label fails the deploy rather than silently skipping.
+        required: false
+        type: boolean
+        default: false
+      seed:
+        description: >
+          Ask the box to run this service's seed AFTER the new container is
+          healthy. Same contract as `migrate`, via the `uplift.seed` label. Off
+          by default and meant for workflow_dispatch: a seed that resets demo
+          data is not something a push should do on its own.
+        required: false
+        type: boolean
+        default: false
+      deploy_branch:
+        description: >
+          Branch this tier ships from. UAT ships from `uat`, production from
+          `main`; neither ever ships from a feature branch.
+        required: false
+        type: string
+        default: "uat"
+      registry:
+        description: >
+          Registry host, for the log line only — the far side resolves the host
+          it must log into from the compose file, never from anything CI sends.
+        required: false
+        type: string
+        default: "registry.uplifttech.co"
+      deploy_user:
+        description: >
+          Unix account the forced command hangs off. It is deliberately NOT the
+          runner's own user: `ghrunner` runs the build, and if ssh were allowed
+          to default to it the connection would be refused with
+          "Permission denied (publickey)" — a message that reads like a broken
+          key rather than a missing username, which is exactly the kind of hour
+          this input exists to save. Passed separately from DEPLOY_HOST so the
+          host form here still matches the host field of DEPLOY_HOST_KEY.
+        required: false
+        type: string
+        default: "uplift-deploy"
+
+    secrets:
+      DEPLOY_HOST:
+        description: >
+          The box's tailscale address, host only — the account comes from the
+          `deploy_user` input. This value must match the host field of
+          DEPLOY_HOST_KEY, or ssh looks the pin up under a name that is not in
+          the file and refuses the connection.
+        required: true
+      DEPLOY_SSH_KEY:
+        description: "Private key for the restricted deploy user, whose authorized_keys entry pins the forced command."
+        required: true
+      DEPLOY_HOST_KEY:
+        description: >
+          The box's public host key as a single known_hosts line, e.g.
+          `100.x.y.z ssh-ed25519 AAAA...`. Pinned rather than trusted on first
+          use — see the deploy step.
+        required: true
+      REGISTRY_USERNAME:
+        description: >
+          Registry account used for the PULL on the far side. Use the pull-only
+          account (`node`), never the push account (`ci`): the box is unattended
+          and anything that gets a shell there gets whatever this can do.
+        required: true
+      REGISTRY_PASSWORD:
+        description: >
+          Password for REGISTRY_USERNAME. The box holds no standing registry
+          credential — it is handed over per run on the ssh channel's stdin and
+          never written to disk there.
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }} (${{ inputs.tier }})
+    runs-on: ["self-hosted", "uplift-server-01"]
+    timeout-minutes: 30
+
+    # No `permissions:` block, deliberately, and for the same reason
+    # `ecs-deploy.yml` has none: a called workflow's token can never be wider
+    # than its caller's, so declaring `contents: write` here would not grant it
+    # — it would only make the job REFUSE TO START for any caller that forgot
+    # the same line, including callers that pass an empty `release_tag` and were
+    # never going to push a tag at all. The requirement belongs in the
+    # `release_tag` description, where the caller reads it, not in a gate that
+    # fires before anything has run.
+    #
+    # Callers that pass a non-empty `release_tag` MUST set
+    # `permissions: { contents: write }` on the job that calls this workflow.
+
+    steps:
+      # ── Preconditions ──────────────────────────────────────────────────────
+      - name: Guard — must deploy from the tier's branch
+        env:
+          GH_REF: ${{ github.ref }}
+          DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$GH_REF" != "refs/heads/$DEPLOY_BRANCH" ]; then
+            echo "::error::Deploy must run from $DEPLOY_BRANCH (got $GH_REF). Branch gate: feature → $DEPLOY_BRANCH → deploy. UAT ships from uat, production ships from main, and neither ever ships from a feature branch."
+            exit 1
+          fi
+
+      # An allowlist, not a pattern match. `tier` is pasted into the command sent
+      # down the ssh channel, and the far side's validating regex is the only
+      # other thing standing between a bad value and a root-owned script. Two
+      # known-good strings is the entire universe of legal values, so say so.
+      - name: Guard — tier is one of the three known tiers
+        env:
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -euo pipefail
+          case "$TIER" in
+            prod|uat|dev) echo "tier=$TIER" ;;
+            *)
+              echo "::error::tier must be exactly 'prod', 'uat' or 'dev' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
+              exit 1
+              ;;
+          esac
+
+      - name: Guard — deploy secrets are present
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$DEPLOY_HOST" ]     || missing="$missing DEPLOY_HOST"
+          [ -n "$DEPLOY_SSH_KEY" ]  || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$DEPLOY_HOST_KEY" ] || missing="$missing DEPLOY_HOST_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing deploy secrets:$missing — pass them from the caller (secrets: inherit, or named explicitly)."
+            exit 1
+          fi
+
+      # ── Hand the box a registry credential for this run only ───────────────
+      # THE BOX HOLDS NO REGISTRY CREDENTIAL, AND THAT IS THE POINT. Giving it a
+      # standing one would mean an unattended machine keeping a key to the company
+      # registry on disk, surviving every reimage of everything around it and
+      # readable by anything that ever gets a shell there. It arrives on the ssh
+      # channel instead, and the far side keeps it only for the length of one
+      # `docker login` (its own `trap EXIT` logs out again).
+      #
+      # TWO LINES: username, then password. The ECR era sent one line because the
+      # username was always the literal `AWS`; a self-hosted registry has real
+      # accounts, and the pull-only one is what belongs on an unattended box.
+      - name: Stage the registry credential
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REGISTRY_USERNAME" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+            echo "::error::REGISTRY_USERNAME / REGISTRY_PASSWORD missing — a secret that is not set arrives as the empty string, and the far side would then try to log in as nobody and report a 401 that reads like a rotated password."
+            exit 1
+          fi
+          # A file in RUNNER_TEMP rather than a step output: a step output is
+          # written to the workflow's own state and survives the job, and this is
+          # a live registry credential. Removed unconditionally below, on the same
+          # runner it was written to.
+          umask 077
+          printf '%s\n%s\n' "$REGISTRY_USERNAME" "$REGISTRY_PASSWORD" > "$RUNNER_TEMP/uplift_registry_cred"
+
+      # ── Ask the box to re-pull one service ─────────────────────────────────
+      # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
+      # whatever is sent arrives as $SSH_ORIGINAL_COMMAND and its exact bytes are
+      # matched against a validating regex before anything runs. An action that
+      # wraps the payload in its own shell preamble (`set -e`, an `export`
+      # prologue, a heredoc) sends something that regex rejects, and the failure
+      # reads as an authentication problem rather than what it is.
+      #
+      # THE HOST KEY IS PINNED. StrictHostKeyChecking=no on a deploy channel
+      # means the channel accepts any host key, which means it accepts a
+      # machine-in-the-middle — on a tailscale address that is a smaller risk
+      # than on the open internet, but we hold the real fingerprint, so there is
+      # no reason to accept anything else. IdentitiesOnly stops ssh offering any
+      # other key the runner happens to have and getting itself rate-limited.
+      #
+      # THE REGISTRY PASSWORD GOES IN ON STDIN, NOT AS AN ARGUMENT. An argument
+      # would land in `SSH_ORIGINAL_COMMAND`, which the far side echoes back into
+      # the deploy log on a malformed command, and would be visible in `ps` on the
+      # box for the life of the call. stdin crosses the same encrypted channel,
+      # is never written to disk there, and passes straight through a forced
+      # command — `restrict` disables port, agent and X11 forwarding and the pty,
+      # none of which is stdin.
+      #
+      # The remote script's stdout IS the deploy log — `docker compose pull` and
+      # `up -d` output — and its exit code IS the deploy's exit code, so neither
+      # is swallowed.
+      - name: Deploy over ssh
+        id: deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ inputs.deploy_user }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
+          TIER: ${{ inputs.tier }}
+          SERVICE: ${{ inputs.service }}
+          MIGRATE: ${{ inputs.migrate }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY_FILE="$RUNNER_TEMP/uplift_server_deploy_key"
+          KNOWN_HOSTS="$RUNNER_TEMP/uplift_server_known_hosts"
+
+          # printf, not echo: the key must end in exactly one newline or OpenSSH
+          # rejects it as malformed, and GitHub strips the trailing newline from
+          # multi-line secrets.
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          printf '%s\n' "$DEPLOY_HOST_KEY" > "$KNOWN_HOSTS"
+          chmod 600 "$KNOWN_HOSTS"
+
+          # The flags are fixed words appended in a fixed order — the far side's
+          # regex accepts exactly `deploy <tier>/<service>[ migrate][ seed]` and
+          # nothing else, so there is nothing here for a caller to shape.
+          CMD="deploy $TIER/$SERVICE"
+          if [ "$MIGRATE" = "true" ]; then CMD="$CMD migrate"; fi
+          if [ "$SEED" = "true" ]; then CMD="$CMD seed"; fi
+          echo "Asking the uplift-server box: $CMD"
+          ssh \
+            -i "$KEY_FILE" \
+            -o IdentitiesOnly=yes \
+            -o UserKnownHostsFile="$KNOWN_HOSTS" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$CMD" \
+            < "$RUNNER_TEMP/uplift_registry_cred"
+
+      # Unconditional: a private key left in RUNNER_TEMP on a self-hosted runner
+      # outlives the job, and this runner is a machine in a house, not an
+      # ephemeral VM that disappears at the end of the run.
+      - name: Remove the deploy key and the registry credential
+        if: always()
+        run: rm -f "$RUNNER_TEMP/uplift_server_deploy_key" "$RUNNER_TEMP/uplift_server_known_hosts" "$RUNNER_TEMP/uplift_registry_cred"
+
+      # ── Smoke test ─────────────────────────────────────────────────────────
+      # THE BODY IS CHECKED, NOT JUST THE STATUS CODE. After a silent rollback,
+      # a no-op pull (the moving tag resolved to the digest already running) or a
+      # compose `up -d` that decided nothing had changed, the OLD revision keeps
+      # answering 200 — identically, cheerfully, and for as long as you care to
+      # poll it. A 200 therefore proves the box is up, not that the deploy did
+      # anything. Matching the version string in the body is what proves the
+      # revision that just built is the one now serving.
+      - name: Smoke test
+        id: smoke
+        env:
+          PUBLIC_HOST: ${{ inputs.public_host }}
+          SMOKE_PATH: ${{ inputs.smoke_path }}
+          VERSION: ${{ inputs.version }}
+          RETRIES: ${{ inputs.smoke_retries }}
+          INTERVAL: ${{ inputs.smoke_interval }}
+        run: |
+          set -uo pipefail
+          # The runner is a long-lived machine in a house, not an ephemeral VM,
+          # so nothing this step writes is allowed to outlive it.
+          trap 'rm -f "$RUNNER_TEMP/smoke_body"' EXIT
+          URL="https://$PUBLIC_HOST$SMOKE_PATH"
+          echo "Polling $URL for version '$VERSION' — up to $RETRIES attempts, ${INTERVAL}s apart."
+          body=""
+          i=1
+          while [ "$i" -le "$RETRIES" ]; do
+            # `|| true`, not `|| echo 000`: curl writes %{http_code} (as 000) even
+            # when the transfer fails, so an appended fallback would produce
+            # "000000" and make the log lie about what happened.
+            code=$(curl -sS -o "$RUNNER_TEMP/smoke_body" -w '%{http_code}' --max-time 10 "$URL" || true)
+            code="${code:-000}"
+            body=$(head -c 400 "$RUNNER_TEMP/smoke_body" 2>/dev/null || true)
+            if [ "$code" = "200" ] && printf '%s' "$body" | grep -qF -- "$VERSION"; then
+              echo "attempt $i → HTTP $code, body reports $VERSION."
+              echo "status=serving $VERSION" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $i → HTTP $code, no '$VERSION' in the body yet."
+            i=$((i + 1))
+            [ "$i" -le "$RETRIES" ] && sleep "$INTERVAL"
+          done
+          echo "::error::$URL never reported version $VERSION after $RETRIES attempts. Last body (400 bytes): $body"
+          echo "::error::A steady 200 without the version means the OLD revision is still serving — the pull was a no-op, or the container did not restart."
+          echo "status=never reported $VERSION" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      # ── Release surface ────────────────────────────────────────────────────
+      # Reached only when the deploy and the smoke test both passed, so the tag
+      # always names something that actually served traffic.
+      - name: Checkout (for the release tag)
+        if: inputs.release_tag != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push release tag
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+          SERVICE: ${{ inputs.service }}
+          TIER: ${{ inputs.tier }}
+        run: |
+          set -uo pipefail
+          # An existing tag is INFORMATIONAL, never a failure. By the time this
+          # step runs the smoke test is green: the deploy succeeded. If a
+          # concurrent run took the number first, that is a bookkeeping race, and
+          # failing the job here would report a healthy UAT as a broken deploy.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::warning::$TAG already exists — leaving it alone. The deploy is green regardless."
+            exit 0
+          fi
+          # actions/checkout sets no git identity; annotated tags need one.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$SERVICE $TAG — automated $TIER deploy (${GITHUB_SHA::7})"
+          # --no-verify: several repos have a husky pre-push hook that runs the
+          # test suite, which would block a tag push for reasons unrelated to it.
+          if git push --no-verify origin "$TAG"; then
+            echo "Tagged $TAG"
+          else
+            echo "::warning::Could not push $TAG — most likely another run pushed it between the check and the push. The deploy is green regardless."
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          SERVICE: ${{ inputs.service }}
+          TIER: ${{ inputs.tier }}
+          VERSION: ${{ inputs.version }}
+          PUBLIC_HOST: ${{ inputs.public_host }}
+          SMOKE_PATH: ${{ inputs.smoke_path }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          SMOKE_STATUS: ${{ steps.smoke.outputs.status }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          {
+            echo "### Docker deploy — \`$SERVICE\` (\`$TIER\`)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| service | \`$SERVICE\` |"
+            echo "| tier | \`$TIER\` |"
+            echo "| version | \`$VERSION\` |"
+            echo "| host | https://$PUBLIC_HOST$SMOKE_PATH |"
+            echo "| smoke | \`${SMOKE_OUTCOME:-skipped}\` — ${SMOKE_STATUS:-not run} |"
+            echo "| release tag | \`${TAG:-none}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
