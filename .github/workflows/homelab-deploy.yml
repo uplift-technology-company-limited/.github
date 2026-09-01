@@ -1,0 +1,115 @@
+# DEPRECATED ALIAS — forwards to uplift-server-deploy.yml
+#
+# This file was renamed to `uplift-server-deploy.yml`. The rename left four
+# repositories calling the old name at a pinned tag:
+#
+#   homepage - sawathr-backend - sampon-frontend - sawathr-frontend
+#     uses: .../.github/workflows/homelab-deploy.yml@v1
+#
+# They kept working only because `v1` still pointed at a commit from before the
+# rename. The moment `v1` moves forward - which it must, so callers can reach
+# `k8s-deploy.yml` and `registry-build-push` - all four break with
+# "workflow not found", and none of them is in a state to notice quickly.
+#
+# So the old name comes back as a forwarder, not a copy. The interface is
+# identical (verified: same twelve inputs, same four secrets), so this file
+# declares them and passes them straight through. There is no second
+# implementation to drift out of sync.
+#
+# TO REMOVE: update those four callers to `uplift-server-deploy.yml`, confirm
+# nothing else references the old name, then delete this file.
+
+name: Deploy to uplift-server-01 (deprecated alias)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Compose service name. This is ALSO the compose file basename the far side resolves: /srv/stacks/<tier>/<service>.yml. It is sent verbatim to the forced command, which validates it again on its own side."
+        required: true
+        type: "string"
+      public_host:
+        description: "Public hostname the smoke test polls, e.g. sawathrm-uat.uplifttech.dev."
+        required: true
+        type: "string"
+      version:
+        description: "The version the newly built image reports. The smoke test looks for this string in the response body — it is what proves the revision that just built is the one now serving."
+        required: true
+        type: "string"
+      tier:
+        description: "`uat` or `dev`. Selects the stack directory: /srv/stacks/<tier>/. Only those two values are accepted and anything else is a hard failure, because this value is interpolated into the command sent over ssh — the far side validates it too, but a workflow that can send arbitrary strings down a deploy channel is a workflow one typo away from being an injection primitive."
+        required: false
+        type: "string"
+        default: "uat"
+      smoke_path:
+        description: "Path appended to public_host for the smoke test."
+        required: false
+        type: "string"
+        default: "/health"
+      release_tag:
+        description: "Tag to push, e.g. v1.2.3 — normally the `tag` output of the uplift-version-bump action. Pushed only AFTER a green smoke test, so a failed deploy leaves no orphan tag and the counter does not burn. Empty skips it."
+        required: false
+        type: "string"
+        default: ""
+      smoke_retries:
+        description: "How many times to poll before giving up."
+        required: false
+        type: "number"
+        default: 20
+      smoke_interval:
+        description: "Seconds between smoke-test attempts."
+        required: false
+        type: "number"
+        default: 15
+      migrate:
+        description: "Ask the box to run this service's migration BEFORE the new container comes up — the same ordering the ECS workflow uses. Sent as the literal word `migrate` on the forced-command channel; WHAT that means is the `uplift.migrate` label on the service in its compose file, which lives in the `infra` repo under GitOps and which this workflow cannot edit. CI chooses whether, never what. A service whose compose file carries no such label fails the deploy rather than silently skipping."
+        required: false
+        type: "boolean"
+        default: false
+      seed:
+        description: "Ask the box to run this service's seed AFTER the new container is healthy. Same contract as `migrate`, via the `uplift.seed` label. Off by default and meant for workflow_dispatch: a seed that resets demo data is not something a push should do on its own."
+        required: false
+        type: "boolean"
+        default: false
+      deploy_branch:
+        description: "Branch this tier ships from. UAT ships from `uat`, production from `main`; neither ever ships from a feature branch."
+        required: false
+        type: "string"
+        default: "uat"
+      deploy_user:
+        description: "Unix account the forced command hangs off. It is deliberately NOT the runner's own user: `ghrunner` runs the build, and if ssh were allowed to default to it the connection would be refused with \"Permission denied (publickey)\" — a message that reads like a broken key rather than a missing username, which is exactly the kind of hour this input exists to save. Passed separately from DEPLOY_HOST so the host form here still matches the host field of DEPLOY_HOST_KEY."
+        required: false
+        type: "string"
+        default: "uplift-deploy"
+    secrets:
+      DEPLOY_HOST:
+        description: "The box's tailscale address, host only — the account comes from the `deploy_user` input. This value must match the host field of DEPLOY_HOST_KEY, or ssh looks the pin up under a name that is not in the file and refuses the connection."
+        required: true
+      DEPLOY_SSH_KEY:
+        description: "Private key for the restricted deploy user, whose authorized_keys entry pins the forced command."
+        required: true
+      DEPLOY_HOST_KEY:
+        description: "The box's public host key as a single known_hosts line, e.g. `100.x.y.z ssh-ed25519 AAAA...`. Pinned rather than trusted on first use — see the deploy step."
+        required: true
+      AWS_ROLE_ARN:
+        description: "Role assumed to mint a registry password for the box. See the ECR login step: the box holds NO standing registry credential, so the password is minted per run and handed over on the ssh channel's stdin. The calling job therefore needs `permissions: id-token: write`."
+        required: true
+
+jobs:
+  forward:
+    name: forward to uplift-server-deploy
+    uses: ./.github/workflows/uplift-server-deploy.yml
+    with:
+      service: ${{ inputs.service }}
+      public_host: ${{ inputs.public_host }}
+      version: ${{ inputs.version }}
+      tier: ${{ inputs.tier }}
+      smoke_path: ${{ inputs.smoke_path }}
+      release_tag: ${{ inputs.release_tag }}
+      smoke_retries: ${{ inputs.smoke_retries }}
+      smoke_interval: ${{ inputs.smoke_interval }}
+      migrate: ${{ inputs.migrate }}
+      seed: ${{ inputs.seed }}
+      deploy_branch: ${{ inputs.deploy_branch }}
+      deploy_user: ${{ inputs.deploy_user }}
+    secrets: inherit
