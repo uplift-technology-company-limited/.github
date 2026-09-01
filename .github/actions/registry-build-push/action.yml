@@ -1,0 +1,141 @@
+name: Registry build and push
+description: >
+  Build an image and push it to ANY OCI registry that accepts a username and
+  password — our self-hosted Zot, GHCR, DOCR, Docker Hub. Emits the full image
+  URI plus the SHA tag, matching `ecr-build-push` so a caller switching over
+  changes its `with:` block and nothing else.
+
+  WHY THIS EXISTS ALONGSIDE ecr-build-push. That action gets its registry
+  password by assuming an AWS role, so every repo that used it — including the
+  ones deploying to our own hardware — stopped being able to deploy the moment
+  the AWS account was suspended for non-payment (2026-08-31). A registry
+  credential should not be reachable only through one vendor's control plane.
+  This action takes the credential as an input and therefore has no opinion
+  about who runs the registry.
+
+inputs:
+  registry:
+    description: >
+      Registry host, no scheme and no trailing slash — `registry.uplifttech.dev`,
+      `ghcr.io`, `sgp1.digitaloceanspaces.com`. Combined with `repo` and the
+      short SHA to form the image URI.
+    required: true
+  repo:
+    description: >
+      Repository path inside the registry, e.g. `account` or `uplift/account`.
+      GHCR requires the owner as the first segment; Zot does not care.
+    required: true
+  username:
+    description: "Registry username. Pass from a secret, never inline."
+    required: true
+  password:
+    description: "Registry password or token. Pass from a secret, never inline."
+    required: true
+
+  dockerfile:
+    description: "Path to the Dockerfile."
+    required: false
+    default: "Dockerfile"
+  context:
+    description: "Build context."
+    required: false
+    default: "."
+  build_args:
+    description: "Newline-separated KEY=VALUE build args."
+    required: false
+    default: ""
+  github_token_secret:
+    description: >
+      When 'true', mounts $GITHUB_TOKEN as a BuildKit secret named
+      `github_token`. Required by every Dockerfile that installs
+      @uplift-technology-company-limited/* from GitHub Packages. The token is
+      mounted, never baked into a layer.
+    required: false
+    default: "false"
+  platform:
+    description: >
+      Target platform. Leave EMPTY for a native build, which is what you want
+      whenever the runner and the destination share an architecture — both
+      uplift-server-01 and the DO droplets are x86_64, so the common case is
+      native and fast. Set `linux/arm64` only when the destination is Graviton;
+      that forces QEMU emulation and a Next.js build gets several times slower.
+    required: false
+    default: ""
+  push_latest:
+    description: "Also tag and push :latest."
+    required: false
+    default: "true"
+
+outputs:
+  image:
+    description: "Full image URI including the SHA tag — pass this to the deploy workflow."
+    value: ${{ steps.build.outputs.image }}
+  tag:
+    description: "The short SHA used as the image tag."
+    value: ${{ steps.build.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    # --password-stdin, never --password: an argument is visible in the process
+    # table to every other process on a self-hosted runner, which is a machine
+    # we share between repos rather than a fresh VM per job.
+    - name: Log in to the registry
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        REG_USER: ${{ inputs.username }}
+        REG_PASS: ${{ inputs.password }}
+      run: |
+        set -euo pipefail
+        if [ -z "$REG_PASS" ]; then
+          echo "::error::Registry password is empty. The caller must pass it from a secret — an unset secret arrives as an empty string, which docker login accepts and then every push 401s."
+          exit 1
+        fi
+        printf '%s' "$REG_PASS" | docker login "$REGISTRY" --username "$REG_USER" --password-stdin
+
+    - name: Build and push
+      id: build
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        IMAGE_REPO: ${{ inputs.repo }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        BUILD_CONTEXT: ${{ inputs.context }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+        USE_GH_SECRET: ${{ inputs.github_token_secret }}
+        PLATFORM: ${{ inputs.platform }}
+        PUSH_LATEST: ${{ inputs.push_latest }}
+      run: |
+        set -euo pipefail
+        SHA=$(git rev-parse --short HEAD)
+        IMAGE="$REGISTRY/$IMAGE_REPO:$SHA"
+
+        args=(build -f "$DOCKERFILE" -t "$IMAGE")
+        [ "$PUSH_LATEST" = "true" ] && args+=(-t "$REGISTRY/$IMAGE_REPO:latest")
+        [ -n "$PLATFORM" ] && args+=(--platform "$PLATFORM")
+        [ "$USE_GH_SECRET" = "true" ] && args+=(--secret id=github_token,env=GITHUB_TOKEN)
+
+        while IFS= read -r ba; do
+          [ -n "$ba" ] && args+=(--build-arg "$ba")
+        done <<< "$BUILD_ARGS"
+
+        args+=("$BUILD_CONTEXT")
+
+        DOCKER_BUILDKIT=1 docker "${args[@]}"
+        docker push "$IMAGE"
+        [ "$PUSH_LATEST" = "true" ] && docker push "$REGISTRY/$IMAGE_REPO:latest"
+
+        echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+        echo "tag=$SHA" >> "$GITHUB_OUTPUT"
+        echo "Built and pushed $IMAGE"
+
+    # The runner is shared and long-lived: a credential left in
+    # ~/.docker/config.json outlives this job and is readable by the next one,
+    # which may belong to a different repository.
+    - name: Log out
+      if: always()
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+      run: docker logout "$REGISTRY" || true
