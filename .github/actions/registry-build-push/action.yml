@@ -125,19 +125,34 @@ runs:
         IMAGE="$REGISTRY/$IMAGE_REPO:$SHA"
 
         args=(build -f "$DOCKERFILE" -t "$IMAGE")
-        [ "$PUSH_LATEST" = "true" ] && args+=(-t "$REGISTRY/$IMAGE_REPO:$MOVING_TAG")
-        [ -n "$PLATFORM" ] && args+=(--platform "$PLATFORM")
-        [ "$USE_GH_SECRET" = "true" ] && args+=(--secret id=github_token,env=GITHUB_TOKEN)
+        # `if` blocks, not `[ ... ] && ...`. Under `set -e` a failed test at the
+        # end of an AND-OR list hands the list its non-zero status and the shell
+        # exits — so `push_latest: false` used to end the step right here, before
+        # the build even started, with nothing printed. The default is "true",
+        # which is the only reason this has not bitten anyone yet.
+        if [ "$PUSH_LATEST" = "true" ]; then
+          args+=(-t "$REGISTRY/$IMAGE_REPO:$MOVING_TAG")
+        fi
+        if [ -n "$PLATFORM" ]; then
+          args+=(--platform "$PLATFORM")
+        fi
+        if [ "$USE_GH_SECRET" = "true" ]; then
+          args+=(--secret id=github_token,env=GITHUB_TOKEN)
+        fi
 
         while IFS= read -r ba; do
-          [ -n "$ba" ] && args+=(--build-arg "$ba")
+          if [ -n "$ba" ]; then
+            args+=(--build-arg "$ba")
+          fi
         done <<< "$BUILD_ARGS"
 
         args+=("$BUILD_CONTEXT")
 
         DOCKER_BUILDKIT=1 docker "${args[@]}"
         docker push "$IMAGE"
-        [ "$PUSH_LATEST" = "true" ] && docker push "$REGISTRY/$IMAGE_REPO:$MOVING_TAG"
+        if [ "$PUSH_LATEST" = "true" ]; then
+          docker push "$REGISTRY/$IMAGE_REPO:$MOVING_TAG"
+        fi
 
         echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
         echo "tag=$SHA" >> "$GITHUB_OUTPUT"
