@@ -427,6 +427,27 @@ jobs:
           else
             echo "::warning::Could not push $TAG — most likely another run pushed it between the check and the push. The deploy is green regardless."
           fi
+      # Same as ecs-deploy: the tag is the source of truth, the Release is the
+      # human-readable face of it (auto-generated notes from the merged PRs).
+      # curl rather than `gh release create` — not every self-hosted runner has
+      # the gh CLI. Non-fatal, so a Release hiccup never fails a green deploy.
+      - name: Publish GitHub Release
+        if: inputs.release_tag != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          payload=$(printf '{"tag_name":"%s","name":"%s","generate_release_notes":true}' "$TAG" "$TAG")
+          if curl -sf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/releases" \
+              -d "$payload" >/dev/null; then
+            echo "Published Release $TAG"
+          else
+            echo "::warning::Could not publish Release $TAG (non-fatal — the tag is already pushed)"
+          fi
 
       - name: Summary
         if: always()
