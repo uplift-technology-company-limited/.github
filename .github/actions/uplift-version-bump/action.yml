@@ -9,9 +9,18 @@ description: >
   burn. Encodes the upliftcontrolversion convention in one place instead of ~20
   hand-copied lines per repo.
 
+  Each part is capped at 99 (decided by Anon 2026-09-18): 0.0.99 -> 0.1.0 and
+  0.99.x -> 1.0.0. A repo already past the cap (e.g. v0.0.104) rolls over on its
+  next bump. A big feature jumps straight to the next minor/major when
+  `[minor]` or `[major]` appears in the PR title — i.e. in any commit message
+  since the last tag — so no one has to remember to press a button.
+
 inputs:
   bump:
-    description: "patch | minor | major. Anything else (including empty) is treated as patch."
+    description: >
+      patch | minor | major. Anything else (including empty) is treated as patch.
+      A `[minor]`/`[major]` marker in a commit message since the last tag raises
+      it; the larger of the two wins.
     required: false
     default: patch
   prefix:
@@ -59,11 +68,39 @@ runs:
         IFS='.' read -r MAJ MIN PAT <<< "${LATEST#$PREFIX}"
         MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
 
-        case "${BUMP:-patch}" in
+        # A marker in the PR title lands in the merge/squash commit message.
+        # Scan everything since the last tag so it is not lost when several PRs
+        # ship in one deploy.
+        if git rev-parse -q --verify "refs/tags/$LATEST" >/dev/null 2>&1; then
+          RANGE="$LATEST..HEAD"
+        else
+          RANGE="HEAD"
+        fi
+        MESSAGES=$(git log --format='%s%n%b' "$RANGE" 2>/dev/null || true)
+        MARKER=""
+        if grep -qiF '[major]' <<< "$MESSAGES"; then MARKER=major
+        elif grep -qiF '[minor]' <<< "$MESSAGES"; then MARKER=minor
+        fi
+
+        rank() { case "$1" in major) echo 2 ;; minor) echo 1 ;; *) echo 0 ;; esac; }
+        LEVEL="${BUMP:-patch}"
+        if [ -n "$MARKER" ] && [ "$(rank "$MARKER")" -gt "$(rank "$LEVEL")" ]; then
+          echo "Found [$MARKER] in a commit message since $LATEST — bumping $MARKER."
+          LEVEL="$MARKER"
+        fi
+
+        case "$LEVEL" in
           major) MAJ=$((MAJ + 1)); MIN=0; PAT=0 ;;
           minor) MIN=$((MIN + 1)); PAT=0 ;;
           *)     PAT=$((PAT + 1)) ;;
         esac
+
+        # Cap every part at 99: carry into the part on the left.
+        carry() {
+          if [ "$PAT" -gt 99 ]; then MIN=$((MIN + 1)); PAT=0; fi
+          if [ "$MIN" -gt 99 ]; then MAJ=$((MAJ + 1)); MIN=0; PAT=0; fi
+        }
+        carry
 
         TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
         # A tag can already exist when a previous deploy pushed it but the run
@@ -71,6 +108,7 @@ runs:
         # than failing the deploy.
         while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; do
           PAT=$((PAT + 1))
+          carry
           TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
         done
 
@@ -79,4 +117,4 @@ runs:
           echo "version=${TAG#$PREFIX}"
           echo "previous=$PREV"
         } >> "$GITHUB_OUTPUT"
-        echo "$PREV → $TAG (bump=${BUMP:-patch})"
+        echo "$PREV → $TAG (bump=${BUMP:-patch}, applied=$LEVEL)"
