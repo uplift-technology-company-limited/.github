@@ -92,6 +92,18 @@ runs:
     # --password-stdin, never --password: an argument is visible in the process
     # table to every other process on a self-hosted runner, which is a machine
     # we share between repos rather than a fresh VM per job.
+    # Jobs share this runner AND ~/.docker/config.json: another repo's "Log out" step
+    # deleted our credentials mid-push twice (samphon uat 2026-09-19, 2026-09-20 —
+    # "no basic auth credentials" right after a successful build). A per-job config
+    # directory makes login/logout of concurrent jobs independent.
+    - name: Isolate docker credentials for this job
+      shell: bash
+      run: |
+        set -euo pipefail
+        cfg="${RUNNER_TEMP}/docker-config-${GITHUB_RUN_ID}-${GITHUB_JOB}-${GITHUB_RUN_ATTEMPT}"
+        mkdir -p "$cfg"
+        echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+
     - name: Log in to the registry
       shell: bash
       env:
@@ -158,9 +170,9 @@ runs:
         echo "tag=$SHA" >> "$GITHUB_OUTPUT"
         echo "Built and pushed $IMAGE"
 
-    # The runner is shared and long-lived: a credential left in
-    # ~/.docker/config.json outlives this job and is readable by the next one,
-    # which may belong to a different repository.
+    # The runner is shared and long-lived: a credential left behind outlives this job
+    # and is readable by the next one, which may belong to a different repository.
+    # With DOCKER_CONFIG set above this only removes THIS job's copy.
     - name: Log out
       if: always()
       shell: bash
