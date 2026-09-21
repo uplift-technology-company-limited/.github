@@ -92,9 +92,27 @@ runs:
     # --password-stdin, never --password: an argument is visible in the process
     # table to every other process on a self-hosted runner, which is a machine
     # we share between repos rather than a fresh VM per job.
+    # Each job gets its own docker config. The runners on a host share one OS
+    # user (server-01: ghrunner ×3) and therefore one ~/.docker/config.json, so
+    # the `docker logout` at the end of one job deleted the credential another
+    # job was still about to push with — 2026-09-19 sampon-frontend deploy-uat:
+    # FE login 16:53:17 · BE logout 16:54:40 · FE push 16:55:31 → "no basic auth
+    # credentials". runner.temp is per runner and wiped between jobs, so a
+    # login here can neither be removed by, nor leak into, any other job.
+    # buildx/compose are system CLI plugins, so an empty config loses nothing.
+    - name: Isolate docker credentials for this job
+      shell: bash
+      env:
+        DOCKER_CONFIG: ${{ runner.temp }}/registry-build-push-docker
+      run: |
+        set -euo pipefail
+        mkdir -p "$DOCKER_CONFIG"
+        chmod 700 "$DOCKER_CONFIG"
+
     - name: Log in to the registry
       shell: bash
       env:
+        DOCKER_CONFIG: ${{ runner.temp }}/registry-build-push-docker
         REGISTRY: ${{ inputs.registry }}
         REG_USER: ${{ inputs.username }}
         REG_PASS: ${{ inputs.password }}
@@ -110,6 +128,7 @@ runs:
       id: build
       shell: bash
       env:
+        DOCKER_CONFIG: ${{ runner.temp }}/registry-build-push-docker
         REGISTRY: ${{ inputs.registry }}
         IMAGE_REPO: ${{ inputs.repo }}
         DOCKERFILE: ${{ inputs.dockerfile }}
@@ -158,12 +177,15 @@ runs:
         echo "tag=$SHA" >> "$GITHUB_OUTPUT"
         echo "Built and pushed $IMAGE"
 
-    # The runner is shared and long-lived: a credential left in
-    # ~/.docker/config.json outlives this job and is readable by the next one,
-    # which may belong to a different repository.
+    # The runner is shared and long-lived: a credential left on disk outlives
+    # this job. Log out of the job's own config and remove it — this no longer
+    # touches ~/.docker, so it cannot sign out a job running next to us.
     - name: Log out
       if: always()
       shell: bash
       env:
+        DOCKER_CONFIG: ${{ runner.temp }}/registry-build-push-docker
         REGISTRY: ${{ inputs.registry }}
-      run: docker logout "$REGISTRY" || true
+      run: |
+        docker logout "$REGISTRY" || true
+        rm -rf "$DOCKER_CONFIG"
