@@ -89,6 +89,33 @@ outputs:
 runs:
   using: composite
   steps:
+    # Every job on a self-hosted runner shares ONE ~/.docker/config.json, so a
+    # `docker logout` at the end of one job deletes the credentials another job
+    # is in the middle of pushing with. Measured, not theorised: 2026-09-19
+    # samphon backend logged out at 09:45:25Z and samphon frontend — logged in
+    # since 09:45:13Z — failed its push at 09:46:03Z with `no basic auth
+    # credentials`; sanoe_pos_backend hit the same thing on 2026-09-20 two
+    # minutes after a sanoe_pos_web merge. Nothing is wrong with either repo's
+    # secrets, which is what makes it so confusing to debug from the failing
+    # side.
+    #
+    # So each job gets its own credential store. Written to $GITHUB_ENV rather
+    # than scoped to these steps, deliberately: the caller logs in AGAIN after
+    # this action (it has to — see the Log out step below), and that second
+    # login has to land in the same isolated store or the race simply moves
+    # there. RUNNER_TEMP is wiped by the runner between jobs.
+    - name: Isolate this job's docker credentials
+      shell: bash
+      run: |
+        set -euo pipefail
+        # RUNNER_TEMP is already per-job: every runner slot has its own
+        # _work/_temp and no slot runs two jobs at once, so this path cannot
+        # collide with a concurrent job the way ~/.docker/config.json does.
+        cfg="${RUNNER_TEMP}/docker-config"
+        mkdir -p "$cfg"
+        echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+        echo "docker credentials for this job live in $cfg"
+
     # --password-stdin, never --password: an argument is visible in the process
     # table to every other process on a self-hosted runner, which is a machine
     # we share between repos rather than a fresh VM per job.
@@ -158,9 +185,12 @@ runs:
         echo "tag=$SHA" >> "$GITHUB_OUTPUT"
         echo "Built and pushed $IMAGE"
 
-    # The runner is shared and long-lived: a credential left in
-    # ~/.docker/config.json outlives this job and is readable by the next one,
-    # which may belong to a different repository.
+    # The runner is shared and long-lived: a credential left behind outlives
+    # this job and is readable by the next one, which may belong to a different
+    # repository. Since the step above moved this job onto its own DOCKER_CONFIG
+    # this logout can no longer reach another job's session — which is the whole
+    # point — but it still clears ours rather than leaning on RUNNER_TEMP
+    # cleanup to do it.
     - name: Log out
       if: always()
       shell: bash
