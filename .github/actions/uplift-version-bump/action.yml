@@ -65,7 +65,16 @@ runs:
         LATEST=${LATEST:-${PREFIX}0.0.0}
         PREV="$LATEST"
 
-        IFS='.' read -r MAJ MIN PAT <<< "${LATEST#$PREFIX}"
+        # Strip SemVer build metadata before parsing. A repo may tag
+        # `v1.2.3+45` to carry a build number (an Android versionCode, say) in
+        # the tag, and splitting THAT on dots leaves PAT="3+45" — which bash
+        # then happily evaluates, so `$((PAT + 1))` is 49 and the version
+        # silently jumps. Everything after the first `+` is metadata by the
+        # SemVer spec and takes no part in ordering, so dropping it here is
+        # correct for those repos and a no-op for every repo tagging vX.Y.Z.
+        CORE=${LATEST%%+*}
+
+        IFS='.' read -r MAJ MIN PAT <<< "${CORE#$PREFIX}"
         MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
 
         # A marker in the PR title lands in the merge/squash commit message.
@@ -106,7 +115,12 @@ runs:
         # A tag can already exist when a previous deploy pushed it but the run
         # was re-triggered, or when someone tagged by hand. Walk forward rather
         # than failing the deploy.
-        while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; do
+        #
+        # `$TAG+*` is checked as well: a repo that carries a build number in the
+        # tag has `v1.2.3+45` on the commit, and looking only for the bare
+        # `v1.2.3` would call that number free and hand it out twice.
+        taken() { [ -n "$(git tag --list "$TAG" "$TAG+*")" ]; }
+        while taken; do
           PAT=$((PAT + 1))
           carry
           TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
