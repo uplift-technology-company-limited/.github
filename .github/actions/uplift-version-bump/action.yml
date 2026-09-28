@@ -86,9 +86,37 @@ runs:
           RANGE="HEAD"
         fi
         MESSAGES=$(git log --format='%s%n%b' "$RANGE" 2>/dev/null || true)
+
+        # A commit that *describes* this convention is not *using* it. Seen for real
+        # (d-clean-mobile, 2026-09-27): the commit that introduced a release workflow
+        # explained itself with the line
+        #
+        #     [minor]/[major] in a commit message raises it
+        #
+        # and a plain `grep -F '[major]'` read that as a request. The release jumped
+        # 1.0.3 -> 2.0.0, and a version can never be walked back: App Store Connect and
+        # Play both refuse a number below one they have already seen, so 1.0.x was gone
+        # for good. It would have fired again on any commit that edits these docs.
+        #
+        # Two narrow rules, both aimed at a mention rather than a request:
+        #   1. a line naming BOTH markers is documentation — nobody asks for both at once
+        #   2. a marker glued to a slash is part of a phrase like `[minor]/[major]`
+        # Everything a person would actually type — `feat: rewrite [major]`,
+        # `[major] drop v1 API`, `fix(auth): [minor] add TOTP` — still matches.
+        CANDIDATES=$(grep -viE '\[minor\][^[:alnum:]]*\[major\]|\[major\][^[:alnum:]]*\[minor\]' \
+          <<< "$MESSAGES" || true)
+
         MARKER=""
-        if grep -qiF '[major]' <<< "$MESSAGES"; then MARKER=major
-        elif grep -qiF '[minor]' <<< "$MESSAGES"; then MARKER=minor
+        if grep -qiE '(^|[^/])\[major\]([^/]|$)' <<< "$CANDIDATES"; then MARKER=major
+        elif grep -qiE '(^|[^/])\[minor\]([^/]|$)' <<< "$CANDIDATES"; then MARKER=minor
+        fi
+
+        # Say which line did it. The old version raised the number with no clue where
+        # the marker came from, which is why the false positive above took a release to
+        # notice instead of a glance at the log.
+        if [ -n "$MARKER" ]; then
+          echo "marker [$MARKER] came from:"
+          grep -iE "(^|[^/])\[$MARKER\]([^/]|$)" <<< "$CANDIDATES" | head -3 | sed 's/^/    /'
         fi
 
         rank() { case "$1" in major) echo 2 ;; minor) echo 1 ;; *) echo 0 ;; esac; }
