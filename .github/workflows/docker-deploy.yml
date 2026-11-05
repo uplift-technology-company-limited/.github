@@ -180,7 +180,12 @@ on:
 jobs:
   deploy:
     name: Deploy ${{ inputs.service }} (${{ inputs.tier }})
-    runs-on: ["self-hosted", "uplift-server-01"]
+    # `uplift-light`, not `uplift-server-01`: this job builds nothing — it ssh's, smoke-tests and
+    # tags — so it must not wait in line behind docker builds for one of the three build slots
+    # (measured 2026-11-05: a dev deploy waited 11 minutes for a slot after its build finished).
+    # Every build slot carries `uplift-light` too, so the job still runs when the light slots
+    # (infra `runner-add-slot.sh add N --labels uplift-light`) are down.
+    runs-on: ["self-hosted", "uplift-light"]
     timeout-minutes: 30
 
     # No `permissions:` block, deliberately, and for the same reason
