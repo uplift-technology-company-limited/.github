@@ -166,6 +166,15 @@ runs:
         if [ "$USE_GH_SECRET" = "true" ]; then
           args+=(--secret id=github_token,env=GITHUB_TOKEN)
         fi
+        # A runner host that defines ci-build.slice (uplift-server-01, infra repo
+        # hosts/uplift-server-01/systemd/ci-build.slice) caps every RUN step of the
+        # build there: without it BuildKit in the system dockerd runs them under
+        # system.slice with no limit, and on 2026-11-12 two Rust builds took 11.7 GB
+        # and left the whole box ~1 GB. Hosts without the slice build as before.
+        if [ -d /sys/fs/cgroup/ci-build.slice ]; then
+          args+=(--cgroup-parent=ci-build.slice)
+          echo "RUN steps capped by ci-build.slice ($(cat /sys/fs/cgroup/ci-build.slice/memory.max) bytes)"
+        fi
 
         while IFS= read -r ba; do
           if [ -n "$ba" ]; then
