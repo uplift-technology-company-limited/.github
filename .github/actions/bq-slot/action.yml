@@ -8,7 +8,7 @@ inputs:
     description: "m (≤4 GiB: bun install/test/typecheck/lint) or l (>4 GiB or unknown: next build, flutter, cargo)"
     required: true
   run:
-    description: "bash script to run (gets the caller's env; pass ${{ }} values through env, not inline)"
+    description: "bash script to run (gets the caller's env; pass expression values through env, not inline)"
     required: true
   max-wait-min:
     description: "give up waiting for a slot after this many minutes and run anyway with a notice (0 = wait forever)"
