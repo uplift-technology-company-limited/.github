@@ -187,7 +187,44 @@ runs:
 
         args+=("$BUILD_CONTEXT")
 
+        # One image build at a time on uplift-server-01, sharing the big (L) slot
+        # with agent builds (build-queue lanes S2/M2/L1, Anon 2026-11-17).
+        # Measured 2026-11-17 00:54: after the runners came back, three CI builds
+        # (fwms web-dev, admin-portal-dev, samian sign-dev) ran at once next to the
+        # queue's own L + M jobs ⇒ load 40, IO PSI some 85, everything crawled.
+        #  1. ci-image-build.lock (runner home): CI builds wait for each other, no limit.
+        #  2. /data/build/agent-build.lock = build-queue's L slot: wait up to
+        #     CI_BUILD_L_WAIT_MIN (15, the overflow threshold Anon set) for agents'
+        #     big job to finish; after that build anyway (still one CI build at a
+        #     time) and say why, instead of failing a deploy on a timeout.
+        # A read-only fd is enough for flock(2); the file is world-readable.
+        # Hosts without these paths (hosted runners, the arm64 EC2) skip both.
+        CI_LOCK=/srv/ghrunner/ci-image-build.lock
+        L_LOCK=/data/build/agent-build.lock
+        CI_BUILD_L_WAIT_MIN=${CI_BUILD_L_WAIT_MIN:-15}
+        ci_fd="" l_fd=""
+        if [ -d /srv/ghrunner ] && [ -w /srv/ghrunner ] && command -v flock >/dev/null; then
+          exec {ci_fd}>>"$CI_LOCK"
+          t0=$(date +%s)
+          echo "Waiting for the CI image-build slot on this host…"
+          flock "$ci_fd"
+          echo "Got the CI image-build slot after $(( ($(date +%s) - t0) / 60 )) min"
+          if [ -r "$L_LOCK" ]; then
+            exec {l_fd}<"$L_LOCK"
+            t0=$(date +%s)
+            if flock -w $(( CI_BUILD_L_WAIT_MIN * 60 )) "$l_fd"; then
+              echo "Got build-queue's L slot after $(( ($(date +%s) - t0) / 60 )) min"
+            else
+              echo "::notice::build-queue's L slot was busy for ${CI_BUILD_L_WAIT_MIN} min (an agent build holds it); building anyway — still the only CI image build on this host"
+              exec {l_fd}<&-; l_fd=""
+            fi
+          fi
+        fi
+
         DOCKER_BUILDKIT=1 docker "${args[@]}"
+        # Release before the push: pushing is network-bound, not RAM-bound.
+        if [ -n "$l_fd" ]; then exec {l_fd}<&-; fi
+        if [ -n "$ci_fd" ]; then exec {ci_fd}>&-; fi
         docker push "$IMAGE"
         if [ "$PUSH_LATEST" = "true" ]; then
           docker push "$REGISTRY/$IMAGE_REPO:$MOVING_TAG"
