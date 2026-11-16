@@ -1,0 +1,60 @@
+name: bq-slot
+description: >
+  Run a heavy CI step inside one of build-queue's M or L slots on uplift-server-01,
+  so CI and agent builds share the same S2/M2/L1 budget (Anon 2026-11-17).
+  On any other host (GitHub-hosted, the arm64 EC2) the script just runs.
+inputs:
+  lane:
+    description: "m (≤4 GiB: bun install/test/typecheck/lint) or l (>4 GiB or unknown: next build, flutter, cargo)"
+    required: true
+  run:
+    description: "bash script to run (gets the caller's env; pass ${{ }} values through env, not inline)"
+    required: true
+  max-wait-min:
+    description: "give up waiting for a slot after this many minutes and run anyway with a notice (0 = wait forever)"
+    required: false
+    default: "15"
+runs:
+  using: composite
+  steps:
+    - name: Run in build-queue slot (${{ inputs.lane }})
+      shell: bash
+      env:
+        BQ_LANE: ${{ inputs.lane }}
+        BQ_RUN: ${{ inputs.run }}
+        BQ_MAX_WAIT_MIN: ${{ inputs.max-wait-min }}
+      run: |
+        set -euo pipefail
+        # Same lock files build-queue uses for its slots (infra repo
+        # hosts/uplift-server-01/bin/build-queue): M = agent-build-m-{0,1}.lock (0666),
+        # L = agent-build.lock. Holding one here means build-queue sees the slot as
+        # taken and its own jobs wait, and the other way round. A read-only fd is
+        # enough for flock(2). Tickets/FIFO stay agent-only (they are 0600 per user).
+        case "$BQ_LANE" in
+          m) locks=(/data/build/agent-build-m-0.lock /data/build/agent-build-m-1.lock) ;;
+          l) locks=(/data/build/agent-build.lock) ;;
+          *) echo "::error::bq-slot lane must be m or l (got '$BQ_LANE')"; exit 2 ;;
+        esac
+        fd="" got=""
+        if [ -r "${locks[0]}" ] && command -v flock >/dev/null; then
+          t0=$(date +%s)
+          echo "Waiting for a build-queue ${BQ_LANE^^} slot on this host…"
+          while :; do
+            for f in "${locks[@]}"; do
+              exec {fd}<"$f"
+              if flock -n "$fd"; then got=$f; break 2; fi
+              exec {fd}<&-
+            done
+            waited=$(( $(date +%s) - t0 ))
+            if [ "$BQ_MAX_WAIT_MIN" -gt 0 ] && [ "$waited" -ge $(( BQ_MAX_WAIT_MIN * 60 )) ]; then
+              echo "::notice::No build-queue ${BQ_LANE^^} slot after ${BQ_MAX_WAIT_MIN} min (agent/CI builds hold them); running anyway"
+              fd=""; break
+            fi
+            sleep 5
+          done
+          if [ -n "$got" ]; then echo "Got $(basename "$got") after $(( $(date +%s) - t0 ))s"; fi
+        fi
+        rc=0
+        bash -euo pipefail -c "$BQ_RUN" || rc=$?
+        if [ -n "$fd" ]; then exec {fd}<&-; fi
+        exit "$rc"
