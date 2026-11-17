@@ -171,12 +171,12 @@ on:
 jobs:
   deploy:
     name: Deploy ${{ inputs.service }} (${{ inputs.tier }})
-    # `uplift-light`, not `uplift-server-01`: this job builds nothing — it ssh's, smoke-tests and
-    # tags — so it must not wait in line behind docker builds for one of the three build slots
-    # (measured 2026-11-05: a dev deploy waited 11 minutes for a slot after its build finished).
-    # Every build slot carries `uplift-light` too, so the job still runs when the light slots
-    # (infra `runner-add-slot.sh add N --labels uplift-light`) are down.
-    runs-on: ["self-hosted", "uplift-light"]
+    # `size-s`: this job builds nothing — it ssh's, smoke-tests and tags — so it runs on the two
+    # small runners (MemoryMax 512M each, infra `gha-runner@4/5.service.d/size.conf`) and never
+    # waits behind a build for the medium/large ones (measured 2026-11-05: a dev deploy waited
+    # 11 minutes for a build slot). Anon 2026-11-17: server-01 runners are S S M L, every job
+    # picks one by `size-s/m/l`; `uplift-light` is being retired from all runners.
+    runs-on: ["self-hosted", "size-s"]
     timeout-minutes: 30
 
     # No `permissions:` block, deliberately, and for the same reason
