@@ -234,5 +234,148 @@ wait
 check "นาฬิกาจริง: a b ได้ทันทีทั้งคู่" 'grep -q "after 0 s" "$T/a.out" && grep -q "after 0 s" "$T/b.out"'
 teardown
 
+# ═══ heavy อัตโนมัติจาก peak (เพดานปลอม 8053063680 = 7680 MiB · ครึ่ง = 3840) ═══
+CAPB=8053063680
+PK=
+# peakenv: ตั้ง cap ปลอม · dir peak ปลอม · probe 1 ครั้ง (deterministic) ⇒ ใช้กับ run ผ่าน PENV
+mkcap() { echo "$CAPB" > "$P/buildkit/memory.max"; PK=$T/peaks; PENV=(CI_BUILD_PEAK_DIR="$PK" CI_BUILD_PROBE_ONCE=1 IMAGE_REPO=img); }
+mkstat() { # $1=dir $2=anon $3=shmem
+  mkdir -p "$P/buildkit/$1"; printf 'anon %s\nanon_thp 5\nfile 9\nshmem %s\n' "$2" "$3" > "$P/buildkit/$1/memory.stat"
+}
+mkpeak() { # $1=เนื้อหา $2=epoch ของ mtime
+  mkdir -p "$PK"; printf '%s\n' "$1" > "$PK/app__img"; touch -d "@$2" "$PK/app__img"
+}
+HV='(ci-heavy-0 ci-image-build-0 ci-image-build-1)'
+
+# 20 ไม่มีไฟล์ peak ⇒ heavy + พิมพ์เหตุผล
+setup; mkcap
+run "${PENV[@]}" -- true
+check "peak: ไม่มีไฟล์ ⇒ heavy" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && grep -q "first build of this image (no peak recorded)" <<< "$OUT"'
+teardown
+
+# 21 peak ≤ cap/2 และสด ⇒ ช่องปกติ
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "3840 4999999 1 1" 4999999
+run "${PENV[@]}" -- true
+check "peak: 3840 ≤ ครึ่งเพดาน ⇒ ช่องปกติ" '[ $RC = 0 ] && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT" && grep -q "last peak 3840 MiB <= half of cap 7680 MiB => normal slot" <<< "$OUT"'
+teardown
+
+# 22 peak > cap/2 ⇒ heavy
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "3841 4999999 1 1" 4999999
+run "${PENV[@]}" -- true
+check "peak: 3841 > ครึ่งเพดาน ⇒ heavy" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && grep -q "last peak 3841 MiB > half of cap 7680 MiB" <<< "$OUT"'
+teardown
+
+# 23 ไฟล์เก่ากว่า 14 วัน ⇒ heavy (ตรงขอบ 14 วันพอดี ยังสด)
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" $((5000000 - 14 * 86400 - 1))
+run "${PENV[@]}" -- true
+check "peak: เก่ากว่า 14 วัน ⇒ heavy" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && grep -q "peak record older than 14 days" <<< "$OUT"'
+mkpeak "100 1 1 1" $((5000000 - 14 * 86400))
+run "${PENV[@]}" -- true
+check "peak: อายุ 14 วันพอดี ยังสด ⇒ ช่องปกติ" '[ $RC = 0 ] && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT"'
+teardown
+
+# 24 ไฟล์ไม่ถูกต้อง ⇒ เตือน + heavy
+for bad in "hello" "-5 1 1 1" "15361 1 1 1" "100 1 1" "100 1 1 1 1" ""; do
+  setup; mkcap; echo 5000000 > "$CLK"; mkpeak "$bad" 4999999
+  run "${PENV[@]}" -- true
+  check "peak ไม่ถูกต้อง ('$bad') ⇒ ::warning:: + heavy" '[ $RC = 0 ] && grep -q "^::warning::peak record" <<< "$OUT" && grep -qF "$HV" <<< "$OUT" && grep -q "peak record invalid" <<< "$OUT"'
+  teardown
+done
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "15360 1 1 1" 4999999
+run "${PENV[@]}" -- true
+check "peak = 2×เพดานพอดี ยังถูกต้อง ⇒ heavy เพราะเกินครึ่ง (ไม่เตือน)" '! grep -q "^::warning::peak record" <<< "$OUT" && grep -q "> half of cap" <<< "$OUT"'
+teardown
+
+# 25 เพดานหาย / max / ไม่ใช่เลข ⇒ ปิดฟีเจอร์: พฤติกรรมเดิม · ไม่เขียน peak
+for capv in MISSING max abc; do
+  setup; mkcap; PK=$T/peaks
+  if [ $capv = MISSING ]; then rm -f "$P/buildkit/memory.max"; else echo "$capv" > "$P/buildkit/memory.max"; fi
+  mkstat r1 1000000000 0
+  run "${PENV[@]}" -- true
+  check "เพดาน=$capv: ฟีเจอร์ปิด ไม่ heavy ไม่มี stats ไม่เขียน peak" '[ $RC = 0 ] && grep -q "peak-aware heavy: off" <<< "$OUT" && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT" && ! grep -q "CI image-build stats" <<< "$OUT" && [ ! -e "$PK" ]'
+  run "${PENV[@]}" CI_BUILD_HEAVY=1 -- true
+  check "เพดาน=$capv: CI_BUILD_HEAVY=1 ยัง heavy ตามกฎเดิม" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && [ ! -e "$PK" ]'
+  teardown
+done
+
+# 26 CI_BUILD_AUTO_HEAVY=0 + ไม่มีไฟล์ ⇒ ช่องปกติ แต่เขียน peak
+setup; mkcap; mkstat r1 1073741824 0
+run "${PENV[@]}" CI_BUILD_AUTO_HEAVY=0 -- true
+check "AUTO_HEAVY=0: ช่องปกติ + เขียน peak" '[ $RC = 0 ] && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT" && grep -q "CI_BUILD_AUTO_HEAVY=0" <<< "$OUT" && grep -Eq "^1024 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+
+# 27 peak จาก memory.stat ปลอม: 2 RUN dir รวม anon+shmem · alone=1 เมื่อช่องอื่นว่าง
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+mkstat run-a 1073741824 104857600; mkstat run-b 2147483648 0   # 1024+100+2048 = 3172 MiB
+run "${PENV[@]}" -- true
+check "peak: รวม anon+shmem ของ 2 dir = 3172 · alone=1" '[ $RC = 0 ] && grep -Eq "^3172 [0-9]+ 42 1$" "$PK/app__img" && grep -q "peak_mib=3172 cap_mib=7680 alone=1 heavy=0 rc=0" <<< "$OUT"'
+teardown
+
+# 28 ช่องอื่นมีผู้ถือ pid ยังอยู่ ⇒ alone=0
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+hold ci-image-build-1 9999999; mkstat run-a 1073741824 0
+run "${PENV[@]}" -- true
+check "peak: ช่องอื่นมีผู้ถือที่ยังอยู่ ⇒ alone=0" '[ $RC = 0 ] && grep -Eq "^1024 [0-9]+ 42 0$" "$PK/app__img" && grep -q "alone=0 heavy=0" <<< "$OUT"'
+teardown
+
+# 29 ช่องอื่นมี owner แต่ pid ตายแล้ว ⇒ alone=1
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+sleep 0 & dead=$!; wait $dead
+hold ci-image-build-1 9999999 still "$dead"
+run "${PENV[@]}" -- true
+check "peak: ช่องอื่นผู้ถือตาย ⇒ alone=1" '[ $RC = 0 ] && grep -q "alone=1 heavy=0" <<< "$OUT"'
+teardown
+
+# 30 คำสั่งล้ม + oom_kill เพิ่ม ⇒ peak = cap_mib · ไม่เพิ่ม ⇒ ใช้ค่าที่วัด · rc ส่งต่อ
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+printf 'low 0\noom 0\noom_kill 2\n' > "$P/buildkit/memory.events"; mkstat r 1073741824 0
+run "${PENV[@]}" -- bash -c 'printf "low 0\noom 1\noom_kill 3\n" > '"$P"'/buildkit/memory.events; exit 137'
+check "OOM: ล้ม + oom_kill เพิ่ม ⇒ บันทึก peak = cap_mib" '[ $RC = 137 ] && grep -Eq "^7680 [0-9]+ 42 1$" "$PK/app__img" && grep -q "hit the build memory cap" <<< "$OUT" && grep -q "peak_mib=7680 cap_mib=7680 alone=1 heavy=0 rc=137" <<< "$OUT"'
+printf 'oom_kill 3\n' > "$P/buildkit/memory.events"
+run "${PENV[@]}" -- bash -c 'exit 3'
+check "ล้มแต่ oom_kill ไม่เพิ่ม ⇒ ใช้ peak ที่วัด (1024)" '[ $RC = 3 ] && grep -Eq "^1024 " "$PK/app__img" && ! grep -q "hit the build memory cap" <<< "$OUT"'
+teardown
+
+# 31 alone=1 และ peak > เกณฑ์ ⇒ warning + step summary + alerts.log · alone=0 ไม่เตือน
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+mkstat big 7340032000 0   # 7000 MiB > 6656
+run "${PENV[@]}" GITHUB_STEP_SUMMARY="$T/summary.md" -- true
+check "เตือน: alone=1 peak 7000 > 6656 ⇒ ::warning:: ระบุ OOM-killed" '[ $RC = 0 ] && grep -q "^::warning::image build app/img peaked at 7000 MiB of a 7680 MiB cap and will be OOM-killed (exit 137)" <<< "$OUT"'
+check "เตือน: step summary 1 บรรทัด + alerts.log" '[ "$(wc -l < "$T/summary.md")" = 1 ] && grep -q "peaked at 7000 MiB" "$T/summary.md" && grep -Eq "^[0-9]+ app img 7000 7680 42$" "$PK/alerts.log"'
+rm -f "$PK/alerts.log" "$T/summary.md"; mkpeak "100 1 1 1" 4999999
+hold ci-image-build-1 9999999
+run "${PENV[@]}" GITHUB_STEP_SUMMARY="$T/summary.md" -- true
+check "ไม่เตือนเมื่อ alone=0 (ช่องอื่นมีผู้ถือ)" '[ $RC = 0 ] && grep -q "alone=0" <<< "$OUT" && ! grep -q "^::warning::image build" <<< "$OUT" && [ ! -e "$T/summary.md" ] && [ ! -e "$PK/alerts.log" ]'
+teardown
+
+# 32 sanitise key: / .. ช่องว่าง ⇒ ไฟล์อยู่ใน peak dir เท่านั้น
+setup; mkcap; mkstat r 1073741824 0
+run "${PENV[@]}" GITHUB_REPOSITORY="org/../etc" IMAGE_REPO="ghcr.io/a b/../../x" -- true
+check "key: ไฟล์เดียวใน peak dir · ชื่อไม่มี / .. ช่องว่าง" '[ $RC = 0 ] && [ "$(ls -A "$PK" | wc -l)" = 1 ] && n=$(ls -A "$PK") && [[ $n != */* && $n != *..* && $n != *" "* ]] && [ -s "$PK/$n" ] && [ ! -e "$T/etc" ] && [ ! -e "$T/x" ]'
+OUT=$(ls -A "$PK"); check "key: ชื่อหลัง sanitise ตรงตามคาด" '[ "$OUT" = "etc__ghcr.io_a_b_______x" ]'
+teardown
+
+# 33 บรรทัดสถิติ + rc คงเดิม (0 และไม่ใช่ 0) · ปล่อย lock ครบ · probe ไม่ค้าง
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+run "${PENV[@]}" -- bash -c 'echo 5000000 > '"$CLK"'.n; mv '"$CLK"'.n '"$CLK"'; exit 0'
+check "stats: รูปแบบครบ wait_s/hold_s · rc=0" '[ $RC = 0 ] && grep -Eq "^CI image-build stats: wait_s=0 hold_s=[0-9]+ peak_mib=0 cap_mib=7680 alone=1 heavy=0 rc=0$" <<< "$OUT"'
+run "${PENV[@]}" -- bash -c 'exit 9'
+check "stats: rc=9 ส่งต่อ + พิมพ์ rc=9" '[ $RC = 9 ] && grep -q "rc=9$" <<< "$OUT" && [ ! -s "$L/ci-image-build-0.owner" ]'
+teardown
+
+# 34 hold_s / wait_s ใช้นาฬิกาปลอม
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
+hold ci-image-build-0 $((5000000 + 100)); hold ci-image-build-1 $((5000000 + 100))
+run "${PENV[@]}" -- bash -c 'echo 5000321 > '"$CLK"
+check "stats: wait_s≥100 และ hold_s=321-ish" '[ $RC = 0 ] && grep -Eq "wait_s=1[0-9][0-9] hold_s=(2[0-9][0-9]|3[0-9][0-9])" <<< "$OUT"'
+teardown
+
+# 35 probe แบบ background (ไม่ใช่ ONCE): วัดได้ และไม่ค้างหลังสคริปต์จบ (pid ตายหมด)
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999; mkstat r 2147483648 0
+run CI_BUILD_PEAK_DIR="$PK" CI_BUILD_PROBE_SEC=1 IMAGE_REPO=img -- bash -c 'sleep 0.3'
+check "probe background: วัดได้ 2048 MiB" '[ $RC = 0 ] && grep -Eq "^2048 " "$PK/app__img" && grep -q "peak_mib=2048" <<< "$OUT"'
+check "probe background: ไม่มีไฟล์ probe ค้าง" '[ -z "$(ls -A "$T" | grep "ci-image-probe")" ]'
+teardown
+
 printf '\n%d ผ่าน · %d ล้ม\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
