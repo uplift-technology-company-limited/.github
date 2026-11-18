@@ -326,14 +326,14 @@ run "${PENV[@]}" -- true
 check "peak: ช่องอื่นผู้ถือตาย ⇒ alone=1" '[ $RC = 0 ] && grep -q "alone=1 heavy=0" <<< "$OUT"'
 teardown
 
-# 30 คำสั่งล้ม + oom_kill เพิ่ม ⇒ peak = cap_mib · ไม่เพิ่ม ⇒ ใช้ค่าที่วัด · rc ส่งต่อ
+# 30 คำสั่งล้ม + oom_kill เพิ่ม ⇒ peak = cap_mib · ล้มแต่ไม่เพิ่ม ⇒ ไม่จด (ค่าเดิมคงไว้) · rc ส่งต่อ
 setup; mkcap; echo 5000000 > "$CLK"; mkpeak "100 1 1 1" 4999999
 printf 'low 0\noom 0\noom_kill 2\n' > "$P/buildkit/memory.events"; mkstat r 1073741824 0
 run "${PENV[@]}" -- bash -c 'printf "low 0\noom 1\noom_kill 3\n" > '"$P"'/buildkit/memory.events; exit 137'
 check "OOM: ล้ม + oom_kill เพิ่ม ⇒ บันทึก peak = cap_mib" '[ $RC = 137 ] && grep -Eq "^7680 [0-9]+ 42 1$" "$PK/app__img" && grep -q "hit the build memory cap" <<< "$OUT" && grep -q "peak_mib=7680 cap_mib=7680 alone=1 heavy=0 rc=137" <<< "$OUT"'
 printf 'oom_kill 3\n' > "$P/buildkit/memory.events"
 run "${PENV[@]}" -- bash -c 'exit 3'
-check "ล้มแต่ oom_kill ไม่เพิ่ม ⇒ ใช้ peak ที่วัด (1024)" '[ $RC = 3 ] && grep -Eq "^1024 " "$PK/app__img" && ! grep -q "hit the build memory cap" <<< "$OUT"'
+check "ล้มแต่ oom_kill ไม่เพิ่ม ⇒ ไม่จด peak · ค่าเดิม (7680 จากรอบ OOM) คงไว้" '[ $RC = 3 ] && grep -Eq "^7680 [0-9]+ 42 1$" "$PK/app__img" && grep -q "ไม่จด peak รอบนี้" <<< "$OUT" && ! grep -q "hit the build memory cap" <<< "$OUT"'
 teardown
 
 # 31 alone=1 และ peak > เกณฑ์ ⇒ warning + step summary + alerts.log · alone=0 ไม่เตือน

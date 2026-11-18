@@ -32,6 +32,9 @@
 # 6. heavy อัตโนมัติจาก peak ของ build ก่อนหน้า (ทุก image build ใช้เพดานหน่วยความจำร่วมกัน = $POOL/buildkit/memory.max
 #    สอง build ที่ anon รวมเกินเพดาน = มีตัวถูก OOM-kill ⇒ ตัวที่รู้ว่าใหญ่ต้องรันเดี่ยว)
 #    ก. ไฟล์ peak ต่อ image: $CI_BUILD_PEAK_DIR/<repo>__<image> (อักขระนอก [A-Za-z0-9._-] ⇒ _ · ".." ⇒ "__") 1 บรรทัด "peak_mib epoch run_id alone"
+#       จดเฉพาะ build ที่สำเร็จ หรือที่ตายเพราะเพดาน (ล้มด้วยเหตุอื่นไม่ทับค่าเดิม) · เขียนด้วย mktemp + mv · ไฟล์ 0644
+#       🔴 host ต้องเตรียม dir ไว้ก่อน: /data/build เป็นของ anon 0755 ⇒ ghrunner สร้างเองไม่ได้ ⇒ `mkdir -m 1777 /data/build/ci-image-peak`
+#          (sticky ⇒ protected_symlinks คุม) · ไม่มี dir = เตือนทุกรอบและ image นั้นรันเดี่ยวทุกครั้ง (ปลอดภัยแต่ช้า)
 #    ข. ก่อนขอที่นั่ง (ถ้าอ่านเพดานเป็นตัวเลขได้ · ไม่งั้นปิดฟีเจอร์ทั้งหมดรอบนั้น = พฤติกรรมเดิม) · repo ยังไม่เป็น heavy และ CI_BUILD_AUTO_HEAVY≠0 ⇒
 #       ไม่มีไฟล์ / เก่ากว่า 14 วัน / อ่านไม่ได้ ⇒ heavy · peak > เพดาน/2 ⇒ heavy · ไม่งั้นช่องปกติ (ลด heavy ที่มาจาก heavy_repos/CI_BUILD_HEAVY ไม่ได้)
 #    ค. ระหว่างถือที่นั่ง: probe ใน background ทุก CI_BUILD_PROBE_SEC วิ รวม anon+shmem ของ $POOL/buildkit/*/memory.stat เก็บค่าสูงสุด
@@ -368,11 +371,14 @@ collect_probe() { # หลังคำสั่งจบ ⇒ P_PEAK / P_OTHER �
   return 0
 }
 
-write_peak() { # $1 peak_mib $2 alone ⇒ เขียนอะตอมมิก (temp ใน dir เดียวกัน แล้ว mv -f) · พลาด = เตือน
-  local tmp=$PEAK_DIR/.$KEY.tmp.$$
-  if (umask 000; mkdir -p "$PEAK_DIR" && chmod 0777 "$PEAK_DIR" 2> /dev/null; printf '%s %s %s %s\n' "$1" "$(now)" "$RUN_ID" "$2" > "$tmp" && mv -f "$tmp" "$PEAK_FILE") 2> /dev/null; then return 0; fi
-  rm -f "$tmp" 2> /dev/null || true
-  warn "เขียน peak record $PEAK_FILE ไม่ได้ (build ไม่ได้รับผลกระทบ · build ถัดไปของ image นี้จะถูกมองว่าไม่มีข้อมูล)"
+write_peak() { # $1 peak_mib $2 alone ⇒ เขียนอะตอมมิก (mktemp ใน dir เดียวกัน แล้ว mv -f) · พลาด = เตือน
+  # dir เป็นของผู้สร้าง (ghrunner · job ทุกตัวรันเป็น uid นี้) 0755 · ไม่เปิดให้ทุกคนเขียน · mktemp = O_EXCL 0600 ⇒ ไม่ตาม symlink
+  local tmp=""
+  if mkdir -p "$PEAK_DIR" 2> /dev/null && tmp=$(mktemp "$PEAK_DIR/.$KEY.XXXXXX" 2> /dev/null) &&
+    printf '%s %s %s %s\n' "$1" "$(now)" "$RUN_ID" "$2" > "$tmp" 2> /dev/null &&
+    chmod 0644 "$tmp" 2> /dev/null && mv -f "$tmp" "$PEAK_FILE" 2> /dev/null; then return 0; fi
+  if [ -n "$tmp" ]; then rm -f "$tmp" 2> /dev/null || true; fi
+  warn "เขียน peak record $PEAK_FILE ไม่ได้ (build ไม่ได้รับผลกระทบ · build ถัดไปของ image นี้จะรันเดี่ยว)"
   return 0
 }
 
@@ -387,13 +393,16 @@ finish_stats() { # $1 = rc ของคำสั่ง · ห้ามทำใ�
     say "build hit the build memory cap (oom_kill $OOM0 -> $OOM_VAL) ⇒ record peak = cap $CAP_MIB MiB"
   fi
   hold_s=$(($(now) - SLOT_T))
-  write_peak "$peak_mib" "$alone"
+  # จดเฉพาะ build ที่สำเร็จ หรือที่ตายเพราะเพดาน · ล้มด้วยเหตุอื่น (มักล้มเร็ว peak ต่ำ) ไม่ทับค่าเดิม
+  if [ "$rc" -eq 0 ] || [ "$OOM_VAL" -gt "$OOM0" ]; then write_peak "$peak_mib" "$alone"; else say "build ล้ม (rc=$rc) โดยไม่ชนเพดาน ⇒ ไม่จด peak รอบนี้ (ค่าเดิมคงไว้)"; fi
   say "CI image-build stats: wait_s=$WAITED hold_s=$hold_s peak_mib=$peak_mib cap_mib=$CAP_MIB alone=$alone heavy=$HEAVY rc=$rc"
   if [ "$alone" = 1 ] && [ "$peak_mib" -gt "$WARN_MIB" ]; then
     msg="image build $REPO/$IMAGE peaked at $peak_mib MiB of a $CAP_MIB MiB cap and will be OOM-killed (exit 137) if it grows — reduce heap / split stages"
     warn "$msg"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then printf '%s\n' "- $msg" >> "$GITHUB_STEP_SUMMARY" 2> /dev/null || true; fi
-    printf '%s %s %s %s %s %s\n' "$(now)" "$REPO" "${IMAGE//[[:space:]]/_}" "$peak_mib" "$CAP_MIB" "$RUN_ID" >> "$PEAK_DIR/alerts.log" 2> /dev/null || true
+    if [ ! -L "$PEAK_DIR/alerts.log" ]; then
+      printf '%s %s %s %s %s %s\n' "$(now)" "$REPO" "${IMAGE//[[:space:]]/_}" "$peak_mib" "$CAP_MIB" "$RUN_ID" >> "$PEAK_DIR/alerts.log" 2> /dev/null || true
+    fi
   fi
   return 0
 }
