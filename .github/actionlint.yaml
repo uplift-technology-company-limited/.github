@@ -1,0 +1,11 @@
+# Labels of our self-hosted runners (all on uplift-server-01) — without this actionlint reports
+# every `runs-on` that names them as unknown.
+#   uplift-server-01 · uplift-local · uplift-ci-local   the build slots (docker build)
+#   uplift-light                                        every slot, build ones included: jobs that build
+#                                                       nothing (deploy over ssh, smoke) — infra runner-add-slot.sh
+self-hosted-runner:
+  labels:
+    - uplift-server-01
+    - uplift-local
+    - uplift-ci-local
+    - uplift-light

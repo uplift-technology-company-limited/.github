@@ -9,9 +9,18 @@ description: >
   burn. Encodes the upliftcontrolversion convention in one place instead of ~20
   hand-copied lines per repo.
 
+  Each part is capped at 99 (decided by Anon 2026-09-18): 0.0.99 -> 0.1.0 and
+  0.99.x -> 1.0.0. A repo already past the cap (e.g. v0.0.104) rolls over on its
+  next bump. A big feature jumps straight to the next minor/major when
+  `[minor]` or `[major]` appears in the PR title — i.e. in any commit message
+  since the last tag — so no one has to remember to press a button.
+
 inputs:
   bump:
-    description: "patch | minor | major. Anything else (including empty) is treated as patch."
+    description: >
+      patch | minor | major. Anything else (including empty) is treated as patch.
+      A `[minor]`/`[major]` marker in a commit message since the last tag raises
+      it; the larger of the two wins.
     required: false
     default: patch
   prefix:
@@ -56,21 +65,92 @@ runs:
         LATEST=${LATEST:-${PREFIX}0.0.0}
         PREV="$LATEST"
 
-        IFS='.' read -r MAJ MIN PAT <<< "${LATEST#$PREFIX}"
+        # Strip SemVer build metadata before parsing. A repo may tag
+        # `v1.2.3+45` to carry a build number (an Android versionCode, say) in
+        # the tag, and splitting THAT on dots leaves PAT="3+45" — which bash
+        # then happily evaluates, so `$((PAT + 1))` is 49 and the version
+        # silently jumps. Everything after the first `+` is metadata by the
+        # SemVer spec and takes no part in ordering, so dropping it here is
+        # correct for those repos and a no-op for every repo tagging vX.Y.Z.
+        CORE=${LATEST%%+*}
+
+        IFS='.' read -r MAJ MIN PAT <<< "${CORE#$PREFIX}"
         MAJ=${MAJ:-0}; MIN=${MIN:-0}; PAT=${PAT:-0}
 
-        case "${BUMP:-patch}" in
+        # A marker in the PR title lands in the merge/squash commit message.
+        # Scan everything since the last tag so it is not lost when several PRs
+        # ship in one deploy.
+        if git rev-parse -q --verify "refs/tags/$LATEST" >/dev/null 2>&1; then
+          RANGE="$LATEST..HEAD"
+        else
+          RANGE="HEAD"
+        fi
+        MESSAGES=$(git log --format='%s%n%b' "$RANGE" 2>/dev/null || true)
+
+        # A commit that *describes* this convention is not *using* it. Seen for real
+        # (d-clean-mobile, 2026-09-27): the commit that introduced a release workflow
+        # explained itself with the line
+        #
+        #     [minor]/[major] in a commit message raises it
+        #
+        # and a plain `grep -F '[major]'` read that as a request. The release jumped
+        # 1.0.3 -> 2.0.0, and a version can never be walked back: App Store Connect and
+        # Play both refuse a number below one they have already seen, so 1.0.x was gone
+        # for good. It would have fired again on any commit that edits these docs.
+        #
+        # Two narrow rules, both aimed at a mention rather than a request:
+        #   1. a line naming BOTH markers is documentation — nobody asks for both at once
+        #   2. a marker glued to a slash is part of a phrase like `[minor]/[major]`
+        # Everything a person would actually type — `feat: rewrite [major]`,
+        # `[major] drop v1 API`, `fix(auth): [minor] add TOTP` — still matches.
+        CANDIDATES=$(grep -viE '\[minor\][^[:alnum:]]*\[major\]|\[major\][^[:alnum:]]*\[minor\]' \
+          <<< "$MESSAGES" || true)
+
+        MARKER=""
+        if grep -qiE '(^|[^/])\[major\]([^/]|$)' <<< "$CANDIDATES"; then MARKER=major
+        elif grep -qiE '(^|[^/])\[minor\]([^/]|$)' <<< "$CANDIDATES"; then MARKER=minor
+        fi
+
+        # Say which line did it. The old version raised the number with no clue where
+        # the marker came from, which is why the false positive above took a release to
+        # notice instead of a glance at the log.
+        if [ -n "$MARKER" ]; then
+          echo "marker [$MARKER] came from:"
+          grep -iE "(^|[^/])\[$MARKER\]([^/]|$)" <<< "$CANDIDATES" | head -3 | sed 's/^/    /'
+        fi
+
+        rank() { case "$1" in major) echo 2 ;; minor) echo 1 ;; *) echo 0 ;; esac; }
+        LEVEL="${BUMP:-patch}"
+        if [ -n "$MARKER" ] && [ "$(rank "$MARKER")" -gt "$(rank "$LEVEL")" ]; then
+          echo "Found [$MARKER] in a commit message since $LATEST — bumping $MARKER."
+          LEVEL="$MARKER"
+        fi
+
+        case "$LEVEL" in
           major) MAJ=$((MAJ + 1)); MIN=0; PAT=0 ;;
           minor) MIN=$((MIN + 1)); PAT=0 ;;
           *)     PAT=$((PAT + 1)) ;;
         esac
 
+        # Cap every part at 99: carry into the part on the left.
+        carry() {
+          if [ "$PAT" -gt 99 ]; then MIN=$((MIN + 1)); PAT=0; fi
+          if [ "$MIN" -gt 99 ]; then MAJ=$((MAJ + 1)); MIN=0; PAT=0; fi
+        }
+        carry
+
         TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
         # A tag can already exist when a previous deploy pushed it but the run
         # was re-triggered, or when someone tagged by hand. Walk forward rather
         # than failing the deploy.
-        while git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; do
+        #
+        # `$TAG+*` is checked as well: a repo that carries a build number in the
+        # tag has `v1.2.3+45` on the commit, and looking only for the bare
+        # `v1.2.3` would call that number free and hand it out twice.
+        taken() { [ -n "$(git tag --list "$TAG" "$TAG+*")" ]; }
+        while taken; do
           PAT=$((PAT + 1))
+          carry
           TAG="${PREFIX}${MAJ}.${MIN}.${PAT}"
         done
 
@@ -79,4 +159,4 @@ runs:
           echo "version=${TAG#$PREFIX}"
           echo "previous=$PREV"
         } >> "$GITHUB_OUTPUT"
-        echo "$PREV → $TAG (bump=${BUMP:-patch})"
+        echo "$PREV → $TAG (bump=${BUMP:-patch}, applied=$LEVEL)"

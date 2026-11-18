@@ -290,6 +290,12 @@ one place rather than ~20 hand-copied lines per repo:
   backwards.
 - **Patch auto-bumps on every deploy** (a build counter); minor/major are for
   meaningful releases.
+- **Every part is capped at 99** (Anon, 2026-09-18): `0.0.99 → 0.1.0`,
+  `0.99.x → 1.0.0`. Plain semver, no zero-padding. A repo already past the cap
+  rolls over on its next bump.
+- **`[minor]` / `[major]` in the PR title bumps that part** — the action scans
+  every commit message since the last tag, so a squash or merge commit carries
+  it. The larger of this marker and the `bump` input wins.
 - **The tag is pushed only after the rollout AND the smoke test pass**, by
   `ecs-deploy` itself. A failed deploy therefore leaves no orphan tag and does
   not burn the counter.

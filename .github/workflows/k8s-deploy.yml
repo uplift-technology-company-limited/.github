@@ -172,6 +172,12 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/kubeconfig"
           printf '%s' "$KUBECFG" | base64 -d > "$RUNNER_TEMP/kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          # 🔴 $GITHUB_ENV มีผลกับ **step ถัดไป** เท่านั้น — ไม่ใช่บรรทัดถัดไปในสเต็ปนี้
+          #    ขาดบรรทัด export นี้ kubectl สองคำสั่งข้างล่างจะไม่เห็น KUBECONFIG แล้ว
+          #    fallback ไปคุยกับ http://localhost:8080 ของตัวเอง ⇒
+          #      "couldn't get current server API group list … dial tcp [::1]:8080: connection refused"
+          #    ซึ่งหน้าตาเหมือน "คลัสเตอร์ล่ม/เน็ตไม่ถึง" ทั้งที่ kubeconfig ถูกต้องทุกตัวอักษร
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
           kubectl version --request-timeout=15s -o yaml 2>/dev/null | grep -m1 gitVersion || true
           kubectl get nodes --request-timeout=15s -o name
 

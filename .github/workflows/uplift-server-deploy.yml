@@ -63,12 +63,18 @@ on:
 
       tier:
         description: >
-          `uat` or `dev`. Selects the stack directory: /srv/stacks/<tier>/. Only
-          those two values are accepted and anything else is a hard failure,
+          `uat`, `dev` or `prod`. Selects the stack directory: /srv/stacks/<tier>/. Only
+          those three values are accepted and anything else is a hard failure,
           because this value is interpolated into the command sent over ssh —
           the far side validates it too, but a workflow that can send arbitrary
           strings down a deploy channel is a workflow one typo away from being
           an injection primitive.
+
+          `prod` reaches REAL data that cannot be re-seeded. A caller using it
+          must also set `deploy_branch: main` — enforced by the tier guard, not
+          left to review, because the two inputs both default to `uat` and a
+          caller that sets one without the other produces a plausible-looking
+          combination rather than an error.
         required: false
         type: string
         default: "uat"
@@ -165,7 +171,12 @@ on:
 jobs:
   deploy:
     name: Deploy ${{ inputs.service }} (${{ inputs.tier }})
-    runs-on: ["self-hosted", "uplift-server-01"]
+    # `size-s`: this job builds nothing — it ssh's, smoke-tests and tags — so it runs on the two
+    # small runners (MemoryMax 512M each, infra `gha-runner@4/5.service.d/size.conf`) and never
+    # waits behind a build for the medium/large ones (measured 2026-11-05: a dev deploy waited
+    # 11 minutes for a build slot). Anon 2026-11-17: server-01 runners are S S M L, every job
+    # picks one by `size-s/m/l`; `uplift-light` is being retired from all runners.
+    runs-on: ["self-hosted", "size-s"]
     timeout-minutes: 30
 
     # No `permissions:` block, deliberately, and for the same reason
@@ -195,20 +206,31 @@ jobs:
 
       # An allowlist, not a pattern match. `tier` is pasted into the command sent
       # down the ssh channel, and the far side's validating regex is the only
-      # other thing standing between a bad value and a root-owned script. Two
+      # other thing standing between a bad value and a root-owned script. Three
       # known-good strings is the entire universe of legal values, so say so.
-      - name: Guard — tier is one of the two known tiers
+      - name: Guard — tier is one of the three known tiers
         env:
           TIER: ${{ inputs.tier }}
+          DEPLOY_BRANCH: ${{ inputs.deploy_branch }}
         run: |
           set -euo pipefail
           case "$TIER" in
-            uat|dev) echo "tier=$TIER" ;;
+            uat|dev|prod) echo "tier=$TIER" ;;
             *)
-              echo "::error::tier must be exactly 'uat' or 'dev' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
+              echo "::error::tier must be exactly 'uat', 'dev' or 'prod' (got '$TIER'). This value is interpolated into the command sent over ssh; unknown values are refused here rather than left to the far side to reject."
               exit 1
               ;;
           esac
+
+          # `tier` และ `deploy_branch` เป็นคนละ input และ default เป็น uat ทั้งคู่
+          # ⇒ caller ที่ตั้งอันเดียวแล้วลืมอีกอันจะได้คู่ที่ "ดูสมเหตุสมผล" แทน error
+          # และ branch gate ข้างบนจับไม่ได้ เพราะมันเทียบ ref กับ branch ที่ caller
+          # บอกมาเอง — caller ที่บอกผิดคือจุดบอดของมันพอดี
+          # ทิศที่อันตรายมีทางเดียว: เอา branch ของ uat ไปลง tier ที่เก็บข้อมูลจริง
+          if [ "$TIER" = "prod" ] && [ "$DEPLOY_BRANCH" != "main" ]; then
+            echo "::error::tier 'prod' requires deploy_branch 'main' (got '$DEPLOY_BRANCH'). prod holds data that cannot be re-seeded; it ships from main only."
+            exit 1
+          fi
 
       - name: Guard — deploy secrets are present
         env:
@@ -260,7 +282,13 @@ jobs:
           # a live registry credential. The file is removed unconditionally below,
           # on the same runner it was written to.
           umask 077
-          printf '%s' "$PW" > "$RUNNER_TEMP/uplift_server_ecr_pw"
+          # 🔴 2026-09-01 · สองบรรทัด: username แล้ว password
+          # ฝั่งเครื่อง (uplift-deploy.sh) เลิกฮาร์ดโค้ด `--username AWS` แล้ว เพราะ registry
+          # ของเราเอง (zot) มีบัญชีจริง ⇒ ช่องทางนี้ส่ง username มาด้วยเสมอ · ของ ECR
+          # username คือคำว่า AWS อยู่แล้ว จึงเขียนตรง ๆ ตรงนี้ได้
+          # ถ้าไม่แก้ตรงนี้: พอเครื่องติดตั้งสคริปต์ใหม่ deploy ทุกตัวที่ยังเรียก workflow นี้
+          # จะตายด้วย "stdin มีบรรทัดเดียว" ซึ่งอ่านแล้วไม่รู้เลยว่าต้นเหตุอยู่ที่ workflow
+          printf 'AWS\n%s\n' "$PW" > "$RUNNER_TEMP/uplift_server_ecr_pw"
 
       # ── Ask the box to re-pull one service ─────────────────────────────────
       # PLAIN ssh, NOT appleboy/ssh-action. The far side is a forced command:
