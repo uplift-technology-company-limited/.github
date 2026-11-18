@@ -161,6 +161,43 @@ runs:
         } >> "$GITHUB_ENV"
         echo "Registry: $ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
 
+    # Every job on a self-hosted runner shares ONE ~/.docker/config.json (all
+    # runner slots on a host run as the same user with the same HOME). Logging in
+    # there leaves this repo's registry token readable by the next job on the
+    # host, which may belong to a different repository, and lets another job's
+    # `docker logout` cut this one off mid-push. registry-build-push moved to a
+    # per-job store for the same reason; this action now does the same.
+    #
+    # Written to $GITHUB_ENV, not scoped to these steps, so a caller that logs
+    # in again later in the job lands in the same isolated store. An existing
+    # DOCKER_CONFIG (another action already isolated this job) is kept as is.
+    # RUNNER_TEMP is per slot and wiped by the runner between jobs.
+    #
+    # If the shared config selects a non-default docker context, its endpoint
+    # is carried over as DOCKER_HOST so moving the config cannot silently switch
+    # this job to a different daemon.
+    - name: Isolate this job's docker credentials
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${DOCKER_CONFIG:-}" ] && [ "${DOCKER_CONFIG}" != "${HOME}/.docker" ]; then
+          echo "DOCKER_CONFIG already isolated for this job: $DOCKER_CONFIG"
+          exit 0
+        fi
+        ctx=$(docker context show 2>/dev/null || echo default)
+        if [ "$ctx" != default ] && [ -z "${DOCKER_HOST:-}" ]; then
+          host=$(docker context inspect "$ctx" --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
+          if [ -n "$host" ]; then
+            echo "DOCKER_HOST=$host" >> "$GITHUB_ENV"
+            echo "keeping docker context '$ctx' endpoint as DOCKER_HOST=$host"
+          fi
+        fi
+        cfg="${RUNNER_TEMP}/docker-config"
+        mkdir -p "$cfg"
+        chmod 700 "$cfg"
+        echo "DOCKER_CONFIG=$cfg" >> "$GITHUB_ENV"
+        echo "docker credentials for this job live in $cfg"
+
     - name: Log in to Amazon ECR
       shell: bash
       run: |
@@ -243,3 +280,13 @@ runs:
           echo "revision=$SHA_FULL"
         } >> "$GITHUB_OUTPUT"
         echo "Pushed $IMMUTABLE and $MOVING (linux/amd64, revision $SHA_FULL)"
+
+    # Clear this job's ECR token even when the build failed, rather than leaning
+    # on the runner's RUNNER_TEMP cleanup. The store is per job (step above), so
+    # this cannot reach another job's session. Only the ECR entry is removed: a
+    # caller that logged in to something else in the same store keeps it.
+    - name: Log out of Amazon ECR
+      if: always()
+      shell: bash
+      run: |
+        [ -n "${ECR_REGISTRY:-}" ] && docker logout "$ECR_REGISTRY" || true
