@@ -273,7 +273,7 @@ read_cap() { # ⇒ FEATURE=1 + CAP_MIB ถ้าเพดานเป็นต�
 }
 
 decide_heavy() { # ใช้ HEAVY/CAP_MIB/PEAK_FILE · อาจตั้ง HEAVY=1 · พิมพ์เหตุผลทุกกรณี
-  local reason mt age p e r a x line="" n=0
+  local mt age p e r a x line=""
   if [ "$HEAVY" = 1 ]; then say "peak-aware heavy: heavy อยู่แล้ว (heavy_repos/CI_BUILD_HEAVY) ⇒ คงไว้"; return 0; fi
   if [ "$AUTO_HEAVY" = 0 ]; then say "peak-aware heavy: ปิดโดย CI_BUILD_AUTO_HEAVY=0 ⇒ ช่องปกติ (ยังวัดและบันทึก peak)"; return 0; fi
   if [ ! -f "$PEAK_FILE" ]; then
@@ -344,6 +344,7 @@ start_probe() { # background child · ปิด fd ของ lock · ตาย�
   PROBE_F=$(mktemp "$(dirname "$LOG")/.ci-image-probe.XXXXXX" 2> /dev/null || mktemp 2> /dev/null || true)
   [ -n "$PROBE_F" ] || { warn "สร้างไฟล์ probe ไม่ได้ ⇒ ไม่วัด peak รอบนี้"; return 0; }
   (
+    set +e # สืบ set -e มาจากแม่: คำสั่งใดล้ม (เช่น mv) จะฆ่า probe เงียบ ⇒ peak ค้างค่าต่ำ = ทางอันตรายทางเดียวของแบบนี้
     for fd in "${HELD_FD[@]}"; do exec {fd}<&-; done
     sp=""
     trap '[ -n "$sp" ] && kill "$sp" 2> /dev/null; exit 0' TERM
@@ -372,7 +373,8 @@ collect_probe() { # หลังคำสั่งจบ ⇒ P_PEAK / P_OTHER �
 }
 
 write_peak() { # $1 peak_mib $2 alone ⇒ เขียนอะตอมมิก (mktemp ใน dir เดียวกัน แล้ว mv -f) · พลาด = เตือน
-  # dir เป็นของผู้สร้าง (ghrunner · job ทุกตัวรันเป็น uid นี้) 0755 · ไม่เปิดให้ทุกคนเขียน · mktemp = O_EXCL 0600 ⇒ ไม่ตาม symlink
+  # dir บน host = /data/build/ci-image-peak ของ anon โหมด 1777 (เตรียมไว้ก่อน · ดูหัวไฟล์) · sticky ⇒ protected_symlinks คุม
+  # สคริปต์ไม่ chmod dir เอง · mktemp = O_EXCL 0600 ⇒ ไม่ตาม symlink · ไฟล์ record 0644
   local tmp=""
   if mkdir -p "$PEAK_DIR" 2> /dev/null && tmp=$(mktemp "$PEAK_DIR/.$KEY.XXXXXX" 2> /dev/null) &&
     printf '%s %s %s %s\n' "$1" "$(now)" "$RUN_ID" "$2" > "$tmp" 2> /dev/null &&
@@ -387,7 +389,7 @@ finish_stats() { # $1 = rc ของคำสั่ง · ห้ามทำใ�
   collect_probe
   read_oom
   peak_mib=$((P_PEAK / 1048576))
-  if [ $P_BOTH = 1 ]; then alone=1; elif [ $P_OTHER = 1 ]; then alone=0; else alone=1; fi
+  if [ "$P_BOTH" = 1 ]; then alone=1; elif [ "$P_OTHER" = 1 ]; then alone=0; else alone=1; fi
   if [ "$rc" -ne 0 ] && [ "$OOM_VAL" -gt "$OOM0" ]; then
     peak_mib=$CAP_MIB
     say "build hit the build memory cap (oom_kill $OOM0 -> $OOM_VAL) ⇒ record peak = cap $CAP_MIB MiB"
@@ -413,7 +415,13 @@ HEAVY=0
 case ",$HEAVY_REPOS," in *",$REPO,"*) HEAVY=1 ;; esac
 case "${CI_BUILD_HEAVY:-}" in 1 | true) HEAVY=1 ;; esac
 read_cap
-if [ $FEATURE = 1 ]; then decide_heavy || true; fi
+if [ $FEATURE = 1 ]; then
+  decide_heavy || true
+elif [ "$AUTO_HEAVY" != 0 ] && [ "$HEAVY" != 1 ]; then
+  # ไม่รู้เพดาน = ไม่รู้ว่าซ้อนได้ไหม ⇒ ทางปลอดภัยคือรันเดี่ยว (เช่น หลัง dockerd restart ที่ buildkit cgroup ถูกสร้างใหม่ก่อน R6 ตั้งเพดาน)
+  HEAVY=1
+  warn "peak-aware heavy: อ่านเพดาน $POOL/buildkit/memory.max ไม่ได้ ⇒ รันเดี่ยว (heavy) รอบนี้ · ไม่วัด/ไม่จด peak"
+fi
 
 T0=$(now) START=$T0
 if [ $HEAVY = 1 ]; then

@@ -58,7 +58,7 @@ run() {
   local envs=()
   while [ $# -gt 0 ] && [ "$1" != "--" ]; do envs+=("$1"); shift; done
   shift
-  OUT=$(env -i PATH="$PATH" HOME="$T" GITHUB_REPOSITORY=org/app GITHUB_WORKFLOW="deploy dev" GITHUB_RUN_ID=42 GITHUB_JOB=build \
+  OUT=$(env -i PATH="$PATH" CI_BUILD_AUTO_HEAVY=0 HOME="$T" GITHUB_REPOSITORY=org/app GITHUB_WORKFLOW="deploy dev" GITHUB_RUN_ID=42 GITHUB_JOB=build \
     RUNNER_TEMP="$T" GITHUB_ENV="$T/github_env" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" CI_POOL_CONF="$CONF" \
     CI_BUILD_FAKE_CLOCK="$CLK" CI_BUILD_LOG="$T/build.log" "${envs[@]}" timeout 60 bash "$SUT" -- "$@" 2>&1)
   RC=$?
@@ -148,7 +148,7 @@ teardown
 
 # 11 ระหว่าง heavy ถือ ⇒ build ธรรมดารอ (เพดาน 1 นาที ⇒ 75) · heavy ตัวที่สองก็รอ
 setup; printf 'heavy_repos=app\n' > "$CONF"
-( env -i PATH="$PATH" GITHUB_REPOSITORY=org/app GITHUB_RUN_ID=1 GITHUB_JOB=h1 RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
+( env -i PATH="$PATH" CI_BUILD_AUTO_HEAVY=0 GITHUB_REPOSITORY=org/app GITHUB_RUN_ID=1 GITHUB_JOB=h1 RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
   CI_POOL_CONF="$CONF" CI_BUILD_LOG="$T/h1.log" bash "$SUT" -- sleep 4 > "$T/h1.out" 2>&1 ) &
 PIDS+=($!)
 for _ in $(seq 200); do [ -s "$L/ci-image-build-1.owner" ] && break; sleep 0.02; done
@@ -221,12 +221,12 @@ teardown
 # 19 นาฬิกาจริง (ไม่ปลอม) · POLL 1 · สองตัวขนานได้ ตัวที่สามรอแล้วได้
 setup
 for j in a b; do
-  ( env -i PATH="$PATH" GITHUB_REPOSITORY=org/app GITHUB_JOB=$j RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
+  ( env -i PATH="$PATH" CI_BUILD_AUTO_HEAVY=0 GITHUB_REPOSITORY=org/app GITHUB_JOB=$j RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
     CI_POOL_CONF="$CONF" CI_BUILD_POLL=1 bash "$SUT" -- sleep 2 > "$T/$j.out" 2>&1 ) &
   PIDS+=($!)
 done
 sleep 0.5
-OUT=$(env -i PATH="$PATH" GITHUB_REPOSITORY=org/app GITHUB_JOB=c RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
+OUT=$(env -i PATH="$PATH" CI_BUILD_AUTO_HEAVY=0 GITHUB_REPOSITORY=org/app GITHUB_JOB=c RUNNER_TEMP="$T" CI_BUILD_LOCK_DIR="$L" CI_POOL_CGROUP="$P" \
   CI_POOL_CONF="$CONF" CI_BUILD_POLL=1 timeout 20 bash "$SUT" -- true 2>&1); RC=$?
 w=$(waited)
 check "นาฬิกาจริง: ตัวที่สามรอจนว่าง (ได้ $w วิ)" '[ $RC = 0 ] && [ "$w" -ge 1 ] && [ "$w" -le 4 ]'
@@ -238,7 +238,7 @@ teardown
 CAPB=8053063680
 PK=
 # peakenv: ตั้ง cap ปลอม · dir peak ปลอม · probe 1 ครั้ง (deterministic) ⇒ ใช้กับ run ผ่าน PENV
-mkcap() { echo "$CAPB" > "$P/buildkit/memory.max"; PK=$T/peaks; PENV=(CI_BUILD_PEAK_DIR="$PK" CI_BUILD_PROBE_ONCE=1 IMAGE_REPO=img); }
+mkcap() { echo "$CAPB" > "$P/buildkit/memory.max"; PK=$T/peaks; PENV=(CI_BUILD_AUTO_HEAVY=1 CI_BUILD_PEAK_DIR="$PK" CI_BUILD_PROBE_ONCE=1 IMAGE_REPO=img); }
 mkstat() { # $1=dir $2=anon $3=shmem
   mkdir -p "$P/buildkit/$1"; printf 'anon %s\nanon_thp 5\nfile 9\nshmem %s\n' "$2" "$3" > "$P/buildkit/$1/memory.stat"
 }
@@ -286,15 +286,17 @@ run "${PENV[@]}" -- true
 check "peak = 2×เพดานพอดี ยังถูกต้อง ⇒ heavy เพราะเกินครึ่ง (ไม่เตือน)" '! grep -q "^::warning::peak record" <<< "$OUT" && grep -q "> half of cap" <<< "$OUT"'
 teardown
 
-# 25 เพดานหาย / max / ไม่ใช่เลข ⇒ ปิดฟีเจอร์: พฤติกรรมเดิม · ไม่เขียน peak
+# 25 เพดานหาย / max / ไม่ใช่เลข ⇒ ไม่รู้เพดาน: รันเดี่ยว (heavy) + warning · ไม่วัด ไม่เขียน peak · AUTO_HEAVY=0 ⇒ พฤติกรรมเดิม
 for capv in MISSING max abc; do
   setup; mkcap; PK=$T/peaks
   if [ $capv = MISSING ]; then rm -f "$P/buildkit/memory.max"; else echo "$capv" > "$P/buildkit/memory.max"; fi
   mkstat r1 1000000000 0
   run "${PENV[@]}" -- true
-  check "เพดาน=$capv: ฟีเจอร์ปิด ไม่ heavy ไม่มี stats ไม่เขียน peak" '[ $RC = 0 ] && grep -q "peak-aware heavy: off" <<< "$OUT" && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT" && ! grep -q "CI image-build stats" <<< "$OUT" && [ ! -e "$PK" ]'
+  check "เพดาน=$capv: ไม่รู้เพดาน ⇒ heavy + warning ไม่มี stats ไม่เขียน peak" '[ $RC = 0 ] && grep -q "peak-aware heavy: off" <<< "$OUT" && grep -q "::warning::peak-aware heavy: อ่านเพดาน" <<< "$OUT" && grep -qF "$HV" <<< "$OUT" && ! grep -q "CI image-build stats" <<< "$OUT" && [ ! -e "$PK" ]'
+  run "${PENV[@]}" CI_BUILD_AUTO_HEAVY=0 -- true
+  check "เพดาน=$capv + AUTO_HEAVY=0: พฤติกรรมเดิม ช่องปกติ ไม่มี warning" '[ $RC = 0 ] && grep -q "after 0 s (ci-image-build-0)" <<< "$OUT" && ! grep -q "::warning::peak-aware" <<< "$OUT" && [ ! -e "$PK" ]'
   run "${PENV[@]}" CI_BUILD_HEAVY=1 -- true
-  check "เพดาน=$capv: CI_BUILD_HEAVY=1 ยัง heavy ตามกฎเดิม" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && [ ! -e "$PK" ]'
+  check "เพดาน=$capv: CI_BUILD_HEAVY=1 ยัง heavy ตามกฎเดิม (ไม่มี warning ซ้ำ)" '[ $RC = 0 ] && grep -qF "$HV" <<< "$OUT" && ! grep -q "::warning::peak-aware" <<< "$OUT" && [ ! -e "$PK" ]'
   teardown
 done
 
