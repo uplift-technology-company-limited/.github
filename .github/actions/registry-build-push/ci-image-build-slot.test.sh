@@ -379,5 +379,42 @@ check "probe background: วัดได้ 2048 MiB" '[ $RC = 0 ] && grep -Eq "
 check "probe background: ไม่มีไฟล์ probe ค้าง" '[ -z "$(ls -A "$T" | grep "ci-image-probe")" ]'
 teardown
 
+# 36 ratchet: ไม่ให้ build ที่ต่ำกว่า/cache hit ทับ record สดที่ alone=1
+ratchet_run() { run "${PENV[@]}" -- true; }
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "5000 4999999 1 1" 4999999; mkstat r 314572800 0   # 300 MiB
+ratchet_run
+check "ratchet a: record สด 5000 alone=1 + build ใหม่ 300 ⇒ คง 5000" '[ $RC = 0 ] && grep -Eq "^5000 4999999 1 1$" "$PK/app__img" && grep -q "peak ratchet: new peak 300 MiB < recorded 5000 MiB (fresh, alone=1)" <<< "$OUT" && grep -q "peak_mib=300 " <<< "$OUT"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "5000 1 1 1" $((5000000 - 14 * 86400 - 1)); mkstat r 314572800 0
+ratchet_run
+check "ratchet b: record หมดอายุ ⇒ เขียน 300 ทับ" '[ $RC = 0 ] && grep -Eq "^300 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"   # ไม่มีไฟล์ · peak 0
+ratchet_run
+check "ratchet c1: ไม่มี record + peak 0 ⇒ ไม่เขียนไฟล์" '[ $RC = 0 ] && [ ! -e "$PK/app__img" ] && grep -q "peak 0 MiB (no RUN seen · cache hit) ⇒ not recording peak" <<< "$OUT"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "5000 4999999 1 1" 4999999
+ratchet_run
+check "ratchet c2: มี record + peak 0 ⇒ ไฟล์เดิมไม่เปลี่ยน" '[ $RC = 0 ] && grep -Eq "^5000 4999999 1 1$" "$PK/app__img" && grep -q "not recording peak" <<< "$OUT" && grep -q "peak_mib=0 " <<< "$OUT"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "5000 4999999 1 0" 4999999; mkstat r 314572800 0
+ratchet_run
+check "ratchet d: record alone=0 ⇒ ทับด้วย 300 ได้" '[ $RC = 0 ] && grep -Eq "^300 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "300 4999999 1 1" 4999999; mkstat r 5242880000 0   # 5000 MiB
+ratchet_run
+check "ratchet e: record 300 + build ใหม่ 5000 ⇒ เขียน 5000" '[ $RC = 0 ] && grep -Eq "^5000 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "5000 4999999 1 1" 4999999
+printf 'oom_kill 2\n' > "$P/buildkit/memory.events"; mkstat r 314572800 0
+run "${PENV[@]}" -- bash -c 'printf "oom_kill 3\n" > '"$P"'/buildkit/memory.events; exit 137'
+check "ratchet f: ชนเพดาน ⇒ เขียน = cap (7680) ทับ 5000" '[ $RC = 137 ] && grep -Eq "^7680 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+setup; mkcap; echo 5000000 > "$CLK"; mkpeak "9000 4999999 1 1" 4999999
+printf 'oom_kill 2\n' > "$P/buildkit/memory.events"; mkstat r 314572800 0
+run "${PENV[@]}" -- bash -c 'printf "oom_kill 3\n" > '"$P"'/buildkit/memory.events; exit 137'
+check "ratchet f2: record เดิม 9000 (> cap) ชนเพดาน ⇒ ยังเขียน 7680 (ไม่ถูก ratchet กัน)" '[ $RC = 137 ] && grep -Eq "^7680 [0-9]+ 42 1$" "$PK/app__img"'
+teardown
+
 printf '\n%d ผ่าน · %d ล้ม\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
