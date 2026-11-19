@@ -175,6 +175,17 @@ check "conf: บรรทัดผิดถูกเมินพร้อมเ�
 check "conf: heavy_repos ผิดรูป ⇒ app ไม่ heavy" 'grep -q "after 0 s (ci-image-build-0)$\|after 0 s (ci-image-build-0) ·" <<< "$OUT"'
 teardown
 
+# 13b key ทั้งหมดใน /srv/stacks/bin/pool.conf จริง (19 พ.ย.) ⇒ ไม่มีคำเตือน · key ใหม่ที่ไม่รู้จักยังเตือน
+setup
+printf '%s\n' 'pool_max=9G' 'r1=enforce' 'r1_psi_pct=5' 'r1_anon_pct=90' 'r2=log' 'r3=log' 'r5=enforce' 'r6=enforce' \
+  'buildkit_reserve=1536M' 'r7=log' 'cpu_quota=1000%' 'heavy_repos=uplift-figcraft' 'agent_slice_max=3G' 'r12=log' > "$CONF"
+run -- true
+check "conf จริง: key ของ pool-guard (r5 r6 r7 r12 buildkit_reserve) ไม่เตือน" '[ $RC = 0 ] && ! grep -q "^::warning::pool.conf" <<< "$OUT"'
+printf '%s\n' 'r7x=log' 'rr=1' > "$CONF"
+run -- true
+check "conf: r7x / rr ยังเตือน (ไม่ใช่ r<เลข>)" '[ $RC = 0 ] && [ "$(grep -c "^::warning::pool.conf บรรทัด" <<< "$OUT")" = 2 ]'
+teardown
+
 # 14 ไม่มีทาง "building anyway": เปิด lock ไม่ได้ ⇒ 75 ไม่ build
 setup; : > "$L/ci-image-build-0.lock"; chmod 000 "$L/ci-image-build-0.lock"
 if [ "$(id -u)" != 0 ]; then
