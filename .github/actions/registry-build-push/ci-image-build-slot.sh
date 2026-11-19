@@ -41,6 +41,11 @@
 #       และดูว่ามี build อื่นถือช่องอีกช่องไหม (alone) · ตายตามสคริปต์นี้เสมอ · ไม่ถือ fd ของ lock
 #    ง. คำสั่งจบ (ก่อนปล่อย): บันทึก peak (คำสั่งล้ม + oom_kill ของ $POOL/buildkit เพิ่ม ⇒ peak = เพดาน) · พิมพ์ "CI image-build stats: …" 1 บรรทัด
 #       alone=1 และ peak > CI_BUILD_WARN_MIB ⇒ ::warning:: + GITHUB_STEP_SUMMARY + $CI_BUILD_PEAK_DIR/alerts.log
+#    จ. ratchet: ไม่เขียน record ทับถ้า (1) peak ที่วัดได้ = 0 และไม่ชนเพดาน (cache hit เต็ม ไม่มี RUN ให้ probe เห็น) หรือ
+#       (2) record เดิมสด (≤ 14 วัน) · ถูกต้อง · alone=1 และ peak ใหม่ต่ำกว่า ⇒ คงค่าเดิมไว้ (build ที่ cache hit บางส่วนทำให้ heavy image ได้ช่องปกติแล้วชน 137)
+#       record เดิม alone=0 (เพดานบนจาก build ซ้อนกัน) / หมดอายุ / ไม่ถูกต้อง / ไม่มี ⇒ เขียนตามเดิม · ชนเพดาน (peak=เพดาน) ⇒ เขียนเสมอ
+#       ถ้า image ใช้หน่วยความจำน้อยลงจริง ๆ ให้รีเซ็ตมือ: `rm /data/build/ci-image-peak/<repo>__<image>`
+#       (build ถัดไป = build แรก ⇒ รันเดี่ยวหนึ่งครั้งแล้ววัดใหม่) · หรือรอ 14 วันให้ record หมดอายุเอง
 #    ทุกขั้นนี้ไม่เปลี่ยน exit code และไม่ทำให้ build ล้ม
 # exit: ของคำสั่ง · 75 = ไม่ได้ที่นั่ง (ผู้ถือนิ่ง/ตาย · เกินเพดาน · เปิด lock ไม่ได้) · 64 = env ผิดรูป
 set -euo pipefail
@@ -384,19 +389,42 @@ write_peak() { # $1 peak_mib $2 alone ⇒ เขียนอะตอมมิ�
   return 0
 }
 
+peak_ratchet_keeps() { # $1 peak_mib ใหม่ ⇒ 0 (จริง) ถ้า record เดิมสด+ถูกต้อง+alone=1 และสูงกว่าค่าใหม่ · เงียบ (ไม่เตือน) · ใช้กฎสด/ถูกต้องเดียวกับ decide_heavy
+  local mt p e r a x line=""
+  [ -f "$PEAK_FILE" ] || return 1
+  mt=$(stat -c %Y "$PEAK_FILE" 2> /dev/null || true)
+  [[ $mt =~ ^[0-9]+$ ]] || return 1
+  [ $(($(now) - mt)) -gt $((14 * 86400)) ] && return 1
+  read -r line 2> /dev/null < "$PEAK_FILE" || true
+  read -r p e r a x <<< "$line" || true
+  if [ -z "$p" ] || [ -z "$e" ] || [ -z "$r" ] || [ -z "$a" ] || [ -n "$x" ] || [[ ! $p =~ ^[0-9]+$ ]] || [ "$p" -gt $((2 * CAP_MIB)) ]; then return 1; fi
+  [ "$a" = 1 ] && [ "$1" -lt "$p" ] || return 1
+  OLD_PEAK=$p
+  return 0
+}
+
 finish_stats() { # $1 = rc ของคำสั่ง · ห้ามทำให้ build ล้ม (เรียกด้วย || true)
-  local rc=$1 peak_mib alone hold_s msg
+  local rc=$1 peak_mib alone hold_s msg hit_cap=0 cap_rec=0 OLD_PEAK
   collect_probe
   read_oom
   peak_mib=$((P_PEAK / 1048576))
   if [ "$P_BOTH" = 1 ]; then alone=1; elif [ "$P_OTHER" = 1 ]; then alone=0; else alone=1; fi
-  if [ "$rc" -ne 0 ] && [ "$OOM_VAL" -gt "$OOM0" ]; then
-    peak_mib=$CAP_MIB
+  if [ "$OOM_VAL" -gt "$OOM0" ]; then hit_cap=1; fi
+  if [ "$rc" -ne 0 ] && [ "$hit_cap" = 1 ]; then
+    peak_mib=$CAP_MIB cap_rec=1 # peak = เพดาน ⇒ ข้าม ratchet เสมอ (เพดานคือค่าที่ปลอดภัยที่สุดที่จะจด)
     say "build hit the build memory cap (oom_kill $OOM0 -> $OOM_VAL) ⇒ record peak = cap $CAP_MIB MiB"
   fi
   hold_s=$(($(now) - SLOT_T))
   # จดเฉพาะ build ที่สำเร็จ หรือที่ตายเพราะเพดาน · ล้มด้วยเหตุอื่น (มักล้มเร็ว peak ต่ำ) ไม่ทับค่าเดิม
-  if [ "$rc" -eq 0 ] || [ "$OOM_VAL" -gt "$OOM0" ]; then write_peak "$peak_mib" "$alone"; else say "build ล้ม (rc=$rc) โดยไม่ชนเพดาน ⇒ ไม่จด peak รอบนี้ (ค่าเดิมคงไว้)"; fi
+  if [ "$rc" -ne 0 ] && [ "$hit_cap" = 0 ]; then
+    say "build ล้ม (rc=$rc) โดยไม่ชนเพดาน ⇒ ไม่จด peak รอบนี้ (ค่าเดิมคงไว้)"
+  elif [ "$cap_rec" = 0 ] && [ "$peak_mib" -eq 0 ] && [ "$hit_cap" = 0 ]; then
+    say "peak 0 MiB (no RUN seen · cache hit) ⇒ not recording peak (keeping existing record)"
+  elif [ "$cap_rec" = 0 ] && peak_ratchet_keeps "$peak_mib"; then
+    say "peak ratchet: new peak $peak_mib MiB < recorded $OLD_PEAK MiB (fresh, alone=1) ⇒ keeping recorded value"
+  else
+    write_peak "$peak_mib" "$alone"
+  fi
   say "CI image-build stats: wait_s=$WAITED hold_s=$hold_s peak_mib=$peak_mib cap_mib=$CAP_MIB alone=$alone heavy=$HEAVY rc=$rc"
   if [ "$alone" = 1 ] && [ "$peak_mib" -gt "$WARN_MIB" ]; then
     msg="image build $REPO/$IMAGE peaked at $peak_mib MiB of a $CAP_MIB MiB cap and will be OOM-killed (exit 137) if it grows — reduce heap / split stages"
