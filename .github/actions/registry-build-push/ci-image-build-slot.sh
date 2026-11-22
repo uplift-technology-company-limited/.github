@@ -96,7 +96,8 @@ read_conf() {
       heavy_repos)
         if [[ $v =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]]; then HEAVY_REPOS=$v
         else warn "pool.conf บรรทัด $n: heavy_repos ผิดรูป เมิน"; fi ;;
-      pool_max | r1 | r2 | r3 | cpu_quota | agent_slice_max | r1_psi_pct | r1_anon_pct) ;; # ของตัวอื่น
+      # ของตัวอื่น (pool-guard · slice) · r<เลข> = กฎของ pool-guard ทุกข้อ (r5 r6 r7 … เพิ่มทีหลังได้โดยไม่ต้องย้าย v1)
+      pool_max | cpu_quota | agent_slice_max | buildkit_reserve | r[0-9] | r[0-9][0-9] | r1_psi_pct | r1_anon_pct) ;;
       *) warn "pool.conf บรรทัด $n: ไม่รู้จักหรือผิดรูป เมิน" ;;
     esac
   done < "$CONF"
