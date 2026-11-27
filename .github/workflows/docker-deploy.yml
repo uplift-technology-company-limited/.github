@@ -401,7 +401,7 @@ jobs:
       # always names something that actually served traffic.
       - name: Checkout (for the release tag)
         if: inputs.release_tag != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 

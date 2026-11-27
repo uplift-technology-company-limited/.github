@@ -260,7 +260,7 @@ jobs:
       # again rather than inheriting anything; that is also why the CALLING JOB
       # must grant `permissions: id-token: write`.
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: uplift-server-deploy-${{ inputs.service }}
@@ -417,7 +417,7 @@ jobs:
       # always names something that actually served traffic.
       - name: Checkout (for the release tag)
         if: inputs.release_tag != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
